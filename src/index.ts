@@ -1,47 +1,50 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import dotenv from 'dotenv';
-import { ImapService } from './services/imap-service.js';
-import { AccountManager } from './services/account-manager.js';
-import { SmtpService } from './services/smtp-service.js';
-import { SpamService } from './services/spam-service.js';
-import { registerTools } from './tools/index.js';
+import { createRuntime } from './runtime.js';
+import { createHttpApp, readHttpConfig } from './http-server.js';
 
-// Silence any package version output to stdout
-const originalWrite = process.stdout.write.bind(process.stdout);
-(process.stdout.write as any) = function(chunk: any, encoding?: any, callback?: any): boolean {
-  // Only allow JSON-RPC messages through
-  if (typeof chunk === 'string' && (chunk.startsWith('{') || chunk === '\n')) {
-    return originalWrite(chunk, encoding, callback);
-  }
-  return true;
-};
-
-dotenv.config();
-
-const server = new McpServer({
-  name: 'imap-mcp-server',
-  version: '1.0.0',
-});
-
-const imapService = new ImapService();
-const accountManager = new AccountManager();
-const smtpService = new SmtpService();
-const spamService = new SpamService();
-
-// Allow ImapService to auto-connect using stored credentials
-imapService.setAccountManager(accountManager);
-
-// Register all tools
-registerTools(server, imapService, accountManager, smtpService, spamService);
+dotenv.config({ quiet: true });
 
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('IMAP MCP Server started');
+  const mode = process.env.IMAP_MCP_TRANSPORT ?? 'stdio';
+  if (mode !== 'stdio' && mode !== 'http') throw new Error('IMAP_MCP_TRANSPORT must be stdio or http.');
+  // Validate auth before touching account files or opening a listener.
+  const config = mode === 'http' ? readHttpConfig() : undefined;
+  const runtime = createRuntime();
+  const closeTransport = config
+    ? await new Promise<() => Promise<void>>((resolve, reject) => {
+      const listener = createHttpApp(config, runtime.createServer).listen(config.port, config.host, error => {
+        if (error) { reject(error); return; }
+        console.error(`IMAP MCP HTTP server listening on ${config.host}:${config.port}/mcp`);
+        resolve(() => new Promise<void>((done) => { listener.close(() => done()); }));
+      });
+      listener.on('error', reject);
+    })
+    : await (async () => {
+      const server = runtime.createServer();
+      await server.connect(new StdioServerTransport());
+      console.error('IMAP MCP stdio server started');
+      return () => server.close();
+    })();
+
+  let stopping = false;
+  const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
+    // Drain HTTP requests and bound slow mail-server logout.
+    const timeout = setTimeout(() => process.exit(1), 10_000);
+    timeout.unref();
+    try {
+      await closeTransport();
+      await runtime.close();
+      process.exit(0);
+    } catch { process.exit(1); }
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
-main().catch((error) => {
-  console.error('Server error:', error);
+main().catch(() => {
+  console.error('IMAP MCP startup failed. Check transport, authentication, configuration and permissions.');
   process.exit(1);
 });

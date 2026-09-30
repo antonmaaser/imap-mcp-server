@@ -1,3 +1,4 @@
+import { attachmentSavePath } from '../utils/attachment-path.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ImapService } from '../services/imap-service.js';
 import { AccountManager } from '../services/account-manager.js';
@@ -243,16 +244,16 @@ const sentSaveSuffix = (outcome: SentSaveOutcome) => {
   return '';
 };
 
-const DOWNLOAD_DIR = process.env.IMAP_DOWNLOAD_DIR || join(homedir(), 'Downloads', 'imap-attachments');
-const MAX_UPLOAD_SIZE = parseInt(process.env.IMAP_MAX_UPLOAD_SIZE ?? '', 10) || 25 * 1024 * 1024;
-const UPLOAD_TTL_MS = parseInt(process.env.IMAP_UPLOAD_TTL_MS ?? '', 10) || 24 * 60 * 60 * 1000;
-
 export function emailTools(
   server: McpServer,
   imapService: ImapService,
   accountManager: AccountManager,
   smtpService: SmtpService
 ): void {
+  const DOWNLOAD_DIR = process.env.IMAP_DOWNLOAD_DIR || join(homedir(), 'Downloads', 'imap-attachments');
+  const MAX_UPLOAD_SIZE = parseInt(process.env.IMAP_MAX_UPLOAD_SIZE ?? '', 10) || 25 * 1024 * 1024;
+  const UPLOAD_TTL_MS = parseInt(process.env.IMAP_UPLOAD_TTL_MS ?? '', 10) || 24 * 60 * 60 * 1000;
+
   const parseDateOnly = (value: string): Date => {
     const parts = value.split('-').map(Number);
     if (parts.length !== 3 || parts.some(Number.isNaN)) {
@@ -462,7 +463,7 @@ export function emailTools(
 
     const sanitizedFilename = path.basename(filename);
     const uniquePrefix = `${Date.now()}-${randomBytes(4).toString('hex')}`;
-    const targetPath = path.join(uploadDir, `${uniquePrefix}-${sanitizedFilename}`);
+    const targetPath = attachmentSavePath(DOWNLOAD_DIR, sanitizedFilename, path.join(uploadDir, `${uniquePrefix}-${sanitizedFilename}`));
 
     fs.writeFileSync(targetPath, buffer);
 
@@ -484,18 +485,19 @@ export function emailTools(
 
   // Download attachment tool
   server.registerTool('imap_download_attachment', {
-    description: 'Download a single attachment from an email (folder + uid + attachment filename/contentId, as listed by imap_get_email). Images are returned inline for viewing; PDFs are saved and their text is extracted inline (extractText); other files are saved to the shared downloads directory (or savePath). Use when the user wants the actual file contents, not just the message body.',
+    description: 'Download a single attachment from an email (folder + uid + attachment filename/contentId, as listed by imap_get_email). Images are returned inline for viewing; PDFs are saved and their text is extracted inline (extractText); other files are saved to the shared downloads directory (or savePath). HTTP mode confines saves to IMAP_DOWNLOAD_DIR and rejects symlinks. Use when the user wants the actual file contents, not just the message body.',
     inputSchema: {
       ...accountSelector,
       folder: z.string().default('INBOX').describe('Folder name'),
       uid: z.coerce.number().describe('Email UID'),
       filename: z.string().describe('Attachment filename or contentId as listed by imap_get_email. Matched exactly first, then Unicode-normalized (NFC/NFD spellings of umlauts and accents are treated as equal); a contentId may be given with or without its angle brackets'),
-      savePath: z.string().optional().describe('Optional file path to save the attachment to. If not provided, files are saved to the shared downloads directory.'),
+      savePath: z.string().optional().describe('Optional file path to save the attachment to. HTTP mode requires a path inside IMAP_DOWNLOAD_DIR and rejects symlinks. If omitted, files are saved to the shared downloads directory.'),
       extractText: z.boolean().default(true).describe('For PDFs, extract and return text content inline'),
     }
   }, async ({ accountId: rawAccountId, accountName, folder, uid, filename, savePath, extractText }) => {
     const accountId = accountManager.resolveAccountId(rawAccountId, accountName);
     const { content, contentType, filename: resolvedFilename } = await imapService.getAttachmentContent(accountId, folder, uid, filename);
+    const targetPath = attachmentSavePath(DOWNLOAD_DIR, resolvedFilename, savePath);
 
     const isImage = contentType.startsWith('image/');
     const isPdf = contentType === 'application/pdf' || resolvedFilename.toLowerCase().endsWith('.pdf');
@@ -535,12 +537,11 @@ export function emailTools(
         // Also save the file for binary access
         const fs = await import('fs');
         const path = await import('path');
-        const downloadDir = savePath ? path.dirname(savePath) : DOWNLOAD_DIR;
+        const downloadDir = path.dirname(targetPath);
         fs.mkdirSync(downloadDir, { recursive: true });
         // resolvedFilename comes from the (sender-controlled) MIME headers, so it
         // may contain path-traversal segments like "../../". Confine the default
         // save to DOWNLOAD_DIR via basename; an explicit savePath is caller-chosen.
-        const targetPath = savePath || path.join(DOWNLOAD_DIR, path.basename(resolvedFilename));
         fs.writeFileSync(targetPath, content);
 
         return {
@@ -559,18 +560,17 @@ export function emailTools(
         };
       } catch (err) {
         // Fall through to save-only if PDF parsing fails
-        console.error('PDF text extraction failed:', err);
+        console.error('PDF text extraction failed; saving the attachment without extracted text.');
       }
     }
 
     // Save to shared downloads directory
     const fs = await import('fs');
     const path = await import('path');
-    const downloadDir = savePath ? path.dirname(savePath) : DOWNLOAD_DIR;
+    const downloadDir = path.dirname(targetPath);
     fs.mkdirSync(downloadDir, { recursive: true });
     // Confine the default save to DOWNLOAD_DIR: resolvedFilename is sender-
     // controlled and may contain "../" traversal (savePath is caller-chosen).
-    const targetPath = savePath || path.join(DOWNLOAD_DIR, path.basename(resolvedFilename));
     fs.writeFileSync(targetPath, content);
 
     return {

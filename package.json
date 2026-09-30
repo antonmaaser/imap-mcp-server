@@ -11,7 +11,6 @@
   },
   "files": [
     "dist",
-    "public",
     "README.md",
     "LICENSE"
   ],
@@ -22,11 +21,11 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "setup": "tsx src/setup.ts",
-    "web": "tsx src/web/server.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "lint": "tsc --noEmit --skipLibCheck"
+    "lint": "tsc --noEmit --skipLibCheck",
+    "test:docker": "npm run build && docker build -t imap-mcp-server:local . && node scripts/docker-smoke-test.mjs"
   },
   "keywords": [
     "mcp",
@@ -57,7 +56,6 @@
     "node": ">=22.12.0"
   },
   "devDependencies": {
-    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/mailparser": "^3.4.6",
     "@types/node": "^26.0.0",
@@ -73,17 +71,12 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "body-parser": "^2.2.0",
-    "chalk": "^6.0.0",
     "commander": "^15.0.0",
-    "cors": "^2.8.5",
     "dotenv": "^18.0.0",
     "express": "^5.1.0",
     "imapflow": "^2.0.2",
     "mailparser": "^3.9.11",
     "nodemailer": "^10.0.9",
-    "open": "^11.0.0",
-    "ora": "^9.0.0",
     "pdf-parse": "^2.4.5",
     "turndown": "^7.2.4",
     "turndown-plugin-gfm": "^1.0.2",
@@ -97,7 +90,6 @@
     "ip-address": "^10.7.2",
     "brace-expansion": "^5.0.9",
     "postcss": "^8.5.23",
-    "string-width": "^7.2.0",
     "nanoid": "^3.3.18",
     "html-to-text": "^10.0.1"
   }

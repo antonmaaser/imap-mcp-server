@@ -2,8 +2,6 @@ export interface EmailProvider {
   id: string;
   name: string;
   displayName: string;
-  iconUrl: string;
-  color: string;
   imapHost: string;
   imapPort: number;
   imapSecurity: 'TLS' | 'SSL' | 'STARTTLS';
@@ -22,8 +20,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'gmail',
     name: 'Gmail',
     displayName: 'Google Mail',
-    iconUrl: 'https://cdn.jsdelivr.net/npm/simple-icons@v10/icons/gmail.svg',
-    color: '#EA4335',
     imapHost: 'imap.gmail.com',
     imapPort: 993,
     imapSecurity: 'SSL',
@@ -34,14 +30,12 @@ export const emailProviders: EmailProvider[] = [
     helpUrl: 'https://support.google.com/mail/answer/7126229',
     requiresAppPassword: true,
     oauth2Supported: true,
-    notes: 'Requires app-specific password or OAuth2. Enable "Less secure app access" or use App Password with 2FA.'
+    notes: 'Requires a supported app-specific password or OAuth2 configuration.'
   },
   {
     id: 'outlook',
     name: 'Outlook',
     displayName: 'Microsoft Outlook',
-    iconUrl: 'https://cdn.jsdelivr.net/npm/simple-icons@v10/icons/microsoftoutlook.svg',
-    color: '#0078D4',
     imapHost: 'outlook.office365.com',
     imapPort: 993,
     imapSecurity: 'TLS',
@@ -56,8 +50,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'yahoo',
     name: 'Yahoo',
     displayName: 'Yahoo Mail',
-    iconUrl: 'https://cdn.jsdelivr.net/npm/simple-icons@v10/icons/yahoo.svg',
-    color: '#6001D2',
     imapHost: 'imap.mail.yahoo.com',
     imapPort: 993,
     imapSecurity: 'SSL',
@@ -73,8 +65,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'icloud',
     name: 'iCloud',
     displayName: 'Apple iCloud Mail',
-    iconUrl: 'https://cdn.jsdelivr.net/npm/simple-icons@v10/icons/icloud.svg',
-    color: '#007AFF',
     imapHost: 'imap.mail.me.com',
     imapPort: 993,
     imapSecurity: 'SSL',
@@ -90,8 +80,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'gmx',
     name: 'GMX',
     displayName: 'GMX Mail',
-    iconUrl: 'https://upload.wikimedia.org/wikipedia/commons/4/4e/GMX_logo.svg',
-    color: '#FF6900',
     imapHost: 'imap.gmx.net',
     imapPort: 993,
     imapSecurity: 'SSL',
@@ -105,8 +93,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'webde',
     name: 'Web.de',
     displayName: 'WEB.DE Mail',
-    iconUrl: 'https://upload.wikimedia.org/wikipedia/commons/f/f2/Web.de_logo.svg',
-    color: '#FFCC00',
     imapHost: 'imap.web.de',
     imapPort: 993,
     imapSecurity: 'SSL',
@@ -120,8 +106,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'ionos',
     name: 'IONOS',
     displayName: 'IONOS Mail (1&1)',
-    iconUrl: 'https://cdn.jsdelivr.net/npm/simple-icons@v10/icons/ionos.svg',
-    color: '#003D8F',
     imapHost: 'imap.ionos.de',
     imapPort: 993,
     imapSecurity: 'SSL',
@@ -136,8 +120,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'mailbox',
     name: 'Mailbox.org',
     displayName: 'mailbox.org',
-    iconUrl: 'https://mailbox.org/favicon.ico',
-    color: '#5CB85C',
     imapHost: 'imap.mailbox.org',
     imapPort: 993,
     imapSecurity: 'TLS',
@@ -151,8 +133,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'posteo',
     name: 'Posteo',
     displayName: 'Posteo',
-    iconUrl: 'https://posteo.de/favicon.ico',
-    color: '#8CC63F',
     imapHost: 'posteo.de',
     imapPort: 993,
     imapSecurity: 'TLS',
@@ -166,8 +146,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'aol',
     name: 'AOL',
     displayName: 'AOL Mail',
-    iconUrl: 'https://cdn.jsdelivr.net/npm/simple-icons@v10/icons/aol.svg',
-    color: '#FF0B00',
     imapHost: 'imap.aol.com',
     imapPort: 993,
     imapSecurity: 'SSL',
@@ -182,8 +160,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'office365',
     name: 'Office365',
     displayName: 'Microsoft 365',
-    iconUrl: 'https://cdn.jsdelivr.net/npm/simple-icons@v10/icons/microsoft365.svg',
-    color: '#0078D4',
     imapHost: 'outlook.office365.com',
     imapPort: 993,
     imapSecurity: 'TLS',
@@ -199,8 +175,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'zoho',
     name: 'Zoho',
     displayName: 'Zoho Mail',
-    iconUrl: 'https://cdn.jsdelivr.net/npm/simple-icons@v10/icons/zoho.svg',
-    color: '#C83C2B',
     imapHost: 'imap.zoho.com',
     imapPort: 993,
     imapSecurity: 'SSL',
@@ -215,8 +189,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'protonmail',
     name: 'ProtonMail',
     displayName: 'Proton Mail',
-    iconUrl: 'https://cdn.jsdelivr.net/npm/simple-icons@v10/icons/protonmail.svg',
-    color: '#6D4AFF',
     imapHost: '127.0.0.1',
     imapPort: 1143,
     imapSecurity: 'STARTTLS',
@@ -231,8 +203,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'fastmail',
     name: 'Fastmail',
     displayName: 'Fastmail',
-    iconUrl: 'https://cdn.jsdelivr.net/npm/simple-icons@v10/icons/fastmail.svg',
-    color: '#2E5CFF',
     imapHost: 'imap.fastmail.com',
     imapPort: 993,
     imapSecurity: 'SSL',
@@ -248,8 +218,6 @@ export const emailProviders: EmailProvider[] = [
     id: 'custom',
     name: 'Custom',
     displayName: 'Custom/Other Provider',
-    iconUrl: 'https://cdn.jsdelivr.net/npm/simple-icons@v10/icons/mail.svg',
-    color: '#6B7280',
     imapHost: '',
     imapPort: 993,
     imapSecurity: 'SSL',
@@ -263,7 +231,7 @@ export function getProviderByEmail(email: string): EmailProvider | undefined {
   if (!domain) return undefined;
   
   return emailProviders.find(provider => 
-    provider.domains.some(d => domain.endsWith(d))
+    provider.domains.some(d => (domain === d || domain.endsWith(`.${d}`)))
   );
 }
 

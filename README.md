@@ -11,9 +11,10 @@ A powerful Model Context Protocol (MCP) server that provides seamless IMAP email
 - 📁 **Folder Management**: List folders, check status, get unread counts
 - 🔄 **Multiple Account Support**: Manage multiple IMAP accounts simultaneously
 - 🛡️ **Type-Safe**: Built with TypeScript for reliability
-- 🌐 **Web-Based Setup Wizard**: Easy account configuration with provider presets
+- 🖥️ **CLI Setup**: Account configuration with provider presets and hidden password prompts
 - 📱 **15+ Email Providers**: Pre-configured settings for Gmail, Outlook, Yahoo, and more
 - 🔗 **Auto SMTP Configuration**: Automatic SMTP settings based on IMAP provider
+- 🐳 **Docker Deployment**: Authenticated Streamable HTTP, shared persistence and a localhost reverse-proxy port
 
 ## Installation
 
@@ -31,84 +32,204 @@ npx -y imap-mcp-server
 
 This is the easiest way to use the server in an MCP client (see [Configuration](#configuration) for ready-to-paste `npx` configs).
 
-### Quick Install (Recommended)
+### From this repository
 
-#### macOS/Linux:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nikolausm/imap-mcp-server/main/install.sh | bash
+npm ci
+# Configure accounts and persistence before building the image:
+npm run setup -- init
+npm run setup -- add
+# Add your public hostname to IMAP_MCP_ALLOWED_HOSTS in .env first.
+docker compose up --build -d
 ```
 
-#### Windows (PowerShell as Administrator):
-```powershell
-iwr -useb https://raw.githubusercontent.com/nikolausm/imap-mcp-server/main/install.ps1 | iex
-```
+Requires Docker with Compose **2.30 or newer**. The CLI generates `.env` with
+absolute host paths and your numeric UID/GID. It creates `.imap-mcp/accounts.json`,
+`.imap-mcp/.key`, `.imap-mcp/bearer-token`, and `downloads/` before the build.
+Passwords are encrypted through the same `AccountManager` used by MCP tools.
+The image build never reads this configuration; `.dockerignore` allows only
+source and package/build files into the context.
 
-### Manual Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/nikolausm/imap-mcp-server.git
-cd imap-mcp-server
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Build the project:
-```bash
-npm run build
-```
+For local stdio instead, run `npm run build` and `npm start`. A published npm
+package can still be run with `npx -y imap-mcp-server`; the new HTTP/CLI features
+require a release containing these changes.
 
 ## Account Setup
 
-Accounts are stored encrypted in `~/.imap-mcp/accounts.json`. This file is **shared by all run modes** — whether you start the server via `npx`, a global install, or a local clone, they all read the same accounts. So you only need to set up your accounts once.
-
-### Setting Up Accounts in npx Mode
-
-If you run the server via `npx` (no clone), you have two ways to add accounts:
-
-**Option A — Run the setup wizard directly via npx (no install needed):**
-
-```bash
-npx -p imap-mcp-server imap-setup
-```
-
-This launches the same web-based wizard described below and writes to `~/.imap-mcp/accounts.json`, which your `npx`-configured MCP server then picks up automatically.
-
-**Option B — Add accounts straight from your AI client:**
-
-Once the MCP server is configured, just ask your assistant to add an account — it uses the `imap_add_account` tool. For example:
-
-> "Add my IMAP account: host imap.gmail.com, port 993, user me@gmail.com, password …"
-
-No separate setup step required.
-
-### Web-Based Setup Wizard (Recommended)
-
-After installation, run the setup wizard:
+The web wizard and installer scripts have been replaced by a local TypeScript
+CLI, available as `npm run setup -- <command>` before a build and `imap-setup`
+in the built package. No browser or unauthenticated setup HTTP API is started.
+Without `.env` or an explicit path, account commands use `~/.imap-mcp`. Docker
+initialization defaults to `./.imap-mcp`; subsequent commands read that path
+from the generated `.env`. Always run from the repository directory or provide
+`--config-dir /absolute/path/to/config` when editing a Docker deployment.
 
 ```bash
-npm run setup
+npm run setup -- init                  # Docker files, token, UID/GID and .env
+npm run setup -- providers             # Provider IDs and connection presets
+npm run setup -- add                   # Interactive; passwords are hidden
+npm run setup -- list                  # No passwords in the output
+npm run setup -- edit ACCOUNT_ID       # Blank password retains the existing one
+npm run setup -- test ACCOUNT_ID       # Explicit IMAP connection/folder test
+npm run setup -- remove ACCOUNT_ID     # Removes only that account configuration
+npm run setup -- token --rotate        # Then update clients and recreate container
+npm run setup -- claude-config         # Optional local stdio client configuration
 ```
 
-Or if installed globally:
+`init` retains existing accounts, encryption keys, bearer tokens and `.env`.
+If it preserves an existing `.env`, verify its paths and UID/GID match the
+prepared directories. `init --download-dir /path --compose-env-file /path/.env`
+customizes deployment output; use Compose `--env-file` for a non-default file.
+On Windows, supply non-root `--uid` and `--gid` explicitly. On Linux, use the
+owner of the bind-mounted files; a root-owned `0600` store cannot be read by a
+non-root container. Do not solve that by making credential files world-readable.
+
+The interactive flow supports provider detection, custom hosts/ports, TLS and
+STARTTLS, separate IMAP login and From address, SMTP credentials, Sent behavior,
+Sent-folder override, default BCC and all four environment-managed credentials.
+Connection tests are explicit and are never run during `init`, `add` or `edit`.
+The CLI supports the old wizard's JSON field names for scripted setup:
+
+```json
+{
+  "name": "Work Gmail",
+  "email": "me@gmail.com",
+  "imapPasswordFromEnv": true,
+  "saveToSent": true,
+  "sentFolder": "[Gmail]/Sent Mail",
+  "defaultBcc": "archive@example.com"
+}
+```
+
+Use `npm run setup -- add --input /path/to/account.json` or
+`npm run setup -- add --input -` with JSON on stdin. For edits, send only fields
+to change: `edit ACCOUNT_ID --input -`. Provider defaults include SMTP settings;
+`"smtp": null` explicitly disables stored SMTP settings (the existing mail
+service can still infer SMTP when sending). Custom settings accept
+`host`, `port`, `tls`, `allowStartTLS`, `imapUsername`, `password`, and an optional
+`smtp` object with `host`, `port`, `secure`, `user`, `password`, `authMethod`, `tls`.
+`sentFolder: ""` and `defaultBcc: ""` clear those overrides. Omitted credentials
+are retained on edits; empty credentials can mark an environment-managed field.
+Do not put secrets in command arguments. Store any input JSON containing secrets
+only in your private configuration directory and remove it when finished.
+
+Existing `~/.imap-mcp` accounts work unchanged. To reuse them for Docker:
 
 ```bash
-imap-setup
+npm run setup -- --config-dir "$HOME/.imap-mcp" init
+npm run setup -- --config-dir "$HOME/.imap-mcp" list
 ```
 
-Or directly via npx without installing:
+Both `.key` and `accounts.json` must be moved/backed up together. A missing or
+invalid key is rejected rather than replaced when an account store exists.
+Account updates reload the current store under a cross-process lock and replace
+`accounts.json` atomically, so host CLI and MCP writes preserve each other's
+accounts. Mount the **directory**, since a file bind mount would keep an old
+inode after atomic replacement. For manual JSON edits, stop writers first and
+preserve the encrypted password fields. If a process is killed during a write,
+remove `.accounts.lock` only after stopping all writers; malformed JSON is
+rejected without overwriting it. Restart after changes to credentials/connection
+settings to refresh cached IMAP/SMTP connections; account lists reload live.
 
-```bash
-npx -p imap-mcp-server imap-setup
+## Docker and HTTP MCP
+
+Compose publishes only **`127.0.0.1:47863`**, a deliberately uncommon host port,
+to container port `8787`. The endpoint is `http://127.0.0.1:47863/mcp`; change
+`IMAP_MCP_LOCAL_PORT` if it is occupied. The app binds `0.0.0.0` inside the
+container so Docker can reach it. A reverse proxy running on the host can reach
+the loopback publication; a proxy in another container needs its own network
+configuration rather than treating its own `127.0.0.1` as the Docker host.
+
+| Host file/directory | Container path | Purpose |
+| --- | --- | --- |
+| `IMAP_MCP_CONFIG_DIR` (default `.imap-mcp/`) | `/data/config` (read/write) | Shared encrypted accounts and `.key` |
+| `IMAP_MCP_DOWNLOAD_DIR` (default `downloads/`) | `/data/attachments` (read/write) | Downloads and uploaded attachments |
+| `IMAP_MCP_TOKEN_FILE` (default `.imap-mcp/bearer-token`) | `/run/secrets/mcp_bearer_token` (read-only) | Bearer secret |
+| `credentials.env` (optional) | Process environment | Runtime-only account credential overrides |
+
+The configuration and attachment directories are bind mounts so the host CLI,
+editors and MCP tools use the same underlying files. No anonymous Docker volume
+hides configuration from the host. In HTTP mode, attachment save paths must
+stay inside `/data/attachments`; symbolic links are rejected. Local stdio retains
+caller-selected save paths. Compose refuses to create missing bind paths;
+run `init` first. The container uses your non-root UID/GID, a read-only root
+filesystem, dropped capabilities, `no-new-privileges`, temporary `/tmp`, bounded
+logs and a liveness check at `/healthz`. `.key` and `accounts.json` are owner-only,
+and the generated bearer token is 256 random bits stored with mode `0600`.
+Compose file secrets are bind-mounted files, so their readability comes from
+host permissions and the configured user; changing Compose secret `uid`/`gid`
+is not a substitute for correct ownership.
+
+### Bearer authentication
+
+Every method on `/mcp` requires `Authorization: Bearer <token>`. A missing,
+malformed or wrong token returns `401` with `WWW-Authenticate`; tokens in URLs,
+cookies or request bodies do not authenticate. Comparison uses fixed-length
+SHA-256 digests and `timingSafeEqual`. Tokens and request bodies are never logged.
+The tiny public `/healthz` response contains only `{"status":"ok"}`.
+
+The implementation uses the official SDK's [Streamable HTTP transport](https://ts.sdk.modelcontextprotocol.io/server)
+in stateless JSON response mode. Clients initialize normally and send each MCP
+message in an HTTP POST with both JSON and SSE in `Accept`. GET and DELETE return
+`405` after authentication; server-initiated SSE streams and resumable sessions
+are not offered. Tool names, inputs and outputs retain their existing API.
+
+This deployment uses a **pre-shared bearer token**, as requested. It does not
+implement the OAuth 2.1 authorization server/discovery flow described by the
+[MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).
+Use a client that can send a configured Authorization header (the official SDK's
+`StreamableHTTPClientTransport` accepts `requestInit.headers`). Clients that
+require OAuth discovery need an OAuth layer; a static token is not an OAuth
+access-token issuance service. The token grants access to all configured accounts
+and the enabled tools. Use `IMAP_MCP_READ_ONLY` or `IMAP_MCP_ENABLED_TOOLS` to limit
+capabilities; do not reuse the token for other services or share it among tenants.
+
+For HTTP outside Compose, set `IMAP_MCP_TRANSPORT=http` and exactly one of
+`IMAP_MCP_BEARER_TOKEN_FILE` (preferred) or `IMAP_MCP_BEARER_TOKEN`. Token strings
+must contain 32–4096 characters of RFC 6750 syntax; use random secrets. Inline
+tokens are consumed from `process.env` at startup and only a digest is kept.
+`IMAP_MCP_HOST` defaults to `127.0.0.1`, `IMAP_MCP_PORT` to `8787`, and
+`IMAP_MCP_CONFIG_DIR` to `~/.imap-mcp`. Stdio remains the default transport and
+uses local process access control without HTTP bearer authentication.
+
+### Reverse proxy
+
+Terminate **HTTPS** at the proxy and forward `/mcp` to
+`http://127.0.0.1:47863/mcp`. Preserve `Host`, `Authorization`, `Origin`, `Accept`,
+`Content-Type`, and MCP protocol headers. Do not log Authorization headers or
+request bodies. Add the public hostname to `IMAP_MCP_ALLOWED_HOSTS` before
+starting; hostnames are exact, without scheme, port or wildcard. Origin headers
+are rejected by default. If a browser client needs access, allow only its exact
+origin in `IMAP_MCP_ALLOWED_ORIGINS`; configure CORS explicitly at the proxy, including preflight OPTIONS responses.
+The MCP application itself requires bearer authentication on OPTIONS.
+Native MCP clients commonly omit Origin and do not need that allow-list.
+This follows the transport specification's [Origin validation and authentication guidance](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
+
+Example nginx location inside an existing HTTPS virtual host for
+`mail-mcp.example.com` (also add that name to the host allow-list):
+
+```nginx
+location = /mcp {
+    proxy_pass http://127.0.0.1:47863/mcp;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Authorization $http_authorization;
+    proxy_set_header Origin $http_origin;
+    proxy_buffering off;
+    proxy_read_timeout 300s;
+    client_max_body_size 40m;
+}
 ```
 
-This will:
-1. Start a local web server
-2. Open your browser to the setup wizard
-3. Guide you through adding email accounts with pre-configured settings
+For token rotation, run `npm run setup -- token --rotate`, update the client's
+private Authorization configuration, then `docker compose up -d --force-recreate`.
+A recreate is required because Compose secret mounts retain the old inode after
+atomic token replacement. Account credential environment overrides similarly
+require recreating the container to load changed `credentials.env` values.
+`docker compose down` removes containers/networks and keeps the host data.
+`npm run test:docker` builds the image and runs an isolated Compose smoke test
+with temporary accounts, authentication, host/MCP edits and restart persistence;
+it never contacts mail servers and cleans up its container afterward.
 
 ### Overriding Credentials via Environment Variables
 
@@ -137,17 +258,20 @@ Notes:
   plaintext secret does not linger in the environment (where it could leak to
   child processes or diagnostics). Set them before launching the server.
 
-The setup wizard integrates with this: each credential field (IMAP password,
-IMAP username, SMTP username, SMTP password) has a **"Do not save to config; set
-later using an environment variable"** checkbox. When ticked, the value you enter
-is still used to test the connection, but it is not written to `accounts.json` —
-the wizard shows the exact variable name to export, and the account picks the
-credential up from that variable at runtime.
+The CLI prompts for whether to supply each credential via the environment, or
+accepts `imapUsernameFromEnv`, `imapPasswordFromEnv`, `smtpUsernameFromEnv`, and
+`smtpPasswordFromEnv` in JSON input. It stores empty placeholders and prints the
+exact variable names to supply. In Docker, copy `credentials.env.example` to
+`credentials.env`, set only the needed values, and restrict it to mode `0600`.
+Compose loads this optional file with `format: raw`, so `$` and quotes in a
+password are literal; do not add shell quoting. The normal `.env` configures
+Compose paths/settings and **does not** inject arbitrary account credential
+variables into the container. These belong in `credentials.env`.
 - SMTP variables take effect only when the account already has an SMTP config.
 - Each variable takes effect independently; set only the ones you need.
 
 **If the variable is missing**, the account still holds the empty placeholder the
-wizard wrote. Rather than dialing out with a blank credential — which providers
+CLI wrote. Rather than dialing out with a blank credential — which providers
 answer with a generic authentication failure that looks exactly like a wrong
 password — the server refuses the connection and names what to set:
 
@@ -163,7 +287,7 @@ shell has no effect until the server is restarted.
 
 ### Supported Email Providers
 
-The setup wizard includes pre-configured settings for:
+The CLI includes pre-configured settings for:
 - Gmail / Google Workspace
 - Microsoft Outlook / Hotmail / Live
 - Yahoo Mail
@@ -662,7 +786,8 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
 - Account configurations are stored in `~/.imap-mcp/accounts.json`
 - The store directory, `.key`, and `accounts.json` are written owner-only
   (`0700`/`0600`) so other local users cannot read the key or the credentials
-- The web setup wizard's HTTP API never returns stored passwords to the browser
+- HTTP MCP requires a bearer token; CLI account output omits passwords
+- The image contains neither configuration nor credentials; persistence uses host bind mounts
 - Downloaded attachments are confined to the downloads directory; sender-supplied
   filenames cannot write outside it
 - Never commit or share your encryption key or account configurations

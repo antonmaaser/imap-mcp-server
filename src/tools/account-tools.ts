@@ -121,7 +121,9 @@ export function accountTools(
         host: smtpHost ?? current?.host ?? existing.host,
         port: smtpPort ?? current?.port ?? 587,
         secure: smtpSecure ?? current?.secure ?? false,
-        ...(smtpUser !== undefined ? { user: smtpUser } : current?.user ? { user: current.user } : {}),
+        // Omitted credentials are merged from the encrypted store by the manager.
+        // Copying getAccount()'s user here could persist a runtime env override.
+        ...(smtpUser !== undefined ? { user: smtpUser } : {}),
         ...(smtpPassword !== undefined ? { password: smtpPassword } : {}),
       };
     }

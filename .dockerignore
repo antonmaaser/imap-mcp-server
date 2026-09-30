@@ -1,0 +1,10 @@
+# Allow-list: credentials, attachments, git history and local .env files must
+# never be sent to the builder, even if custom persistence paths are in use.
+**
+!package.json
+!package-lock.json
+!build.mjs
+!src/
+!src/**
+!Dockerfile
+!.dockerignore

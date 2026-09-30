@@ -261,6 +261,10 @@ export class ImapService {
     }
   }
 
+  async disconnectAll(): Promise<void> {
+    await Promise.all([...this.connections.keys()].map(id => this.disconnect(id)));
+  }
+
   private async ensureConnected(accountId: string): Promise<ImapFlow> {
     let state = this.connections.get(accountId);
     if (!state) {
@@ -289,7 +293,7 @@ export class ImapService {
       }
 
       this.reconnectAttempts.set(accountId, attempts + 1);
-      console.log(`Reconnecting to account ${accountId} (attempt ${attempts + 1})`);
+      console.error(`Reconnecting to account ${accountId} (attempt ${attempts + 1})`);
 
       const account = state.account;
       try {

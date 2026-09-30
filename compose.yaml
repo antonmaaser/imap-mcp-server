@@ -1,0 +1,61 @@
+services:
+  imap-mcp:
+    build: .
+    image: imap-mcp-server:local
+    restart: unless-stopped
+    init: true
+    user: "${IMAP_MCP_UID:?Run npm run setup -- init first}:${IMAP_MCP_GID:?Run npm run setup -- init first}"
+    ports:
+      - "127.0.0.1:${IMAP_MCP_LOCAL_PORT:-47863}:8787"
+    environment:
+      NODE_ENV: production
+      IMAP_MCP_TRANSPORT: http
+      IMAP_MCP_HOST: 0.0.0.0
+      IMAP_MCP_PORT: "8787"
+      IMAP_MCP_CONFIG_DIR: /data/config
+      IMAP_DOWNLOAD_DIR: /data/attachments
+      IMAP_MCP_BEARER_TOKEN_FILE: /run/secrets/mcp_bearer_token
+      IMAP_MCP_ALLOWED_HOSTS: "${IMAP_MCP_ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}"
+      IMAP_MCP_ALLOWED_ORIGINS: "${IMAP_MCP_ALLOWED_ORIGINS:-}"
+      IMAP_MCP_READ_ONLY: "${IMAP_MCP_READ_ONLY:-false}"
+      IMAP_MCP_ENABLED_TOOLS: "${IMAP_MCP_ENABLED_TOOLS:-}"
+      IMAP_MAX_UPLOAD_SIZE: "${IMAP_MAX_UPLOAD_SIZE:-26214400}"
+      IMAP_UPLOAD_TTL_MS: "${IMAP_UPLOAD_TTL_MS:-86400000}"
+      IMAP_SPAM_DOMAINS: "${IMAP_SPAM_DOMAINS:-}"
+      IMAP_WHITELIST_DOMAINS: "${IMAP_WHITELIST_DOMAINS:-}"
+    # Account-specific IMAP_MCP_ACCOUNT_* variables go here, without putting
+    # plaintext credentials in the image, Compose YAML or normal .env file.
+    env_file:
+      - path: ./credentials.env
+        required: false
+        format: raw
+    volumes:
+      - type: bind
+        source: "${IMAP_MCP_CONFIG_DIR:-./.imap-mcp}"
+        target: /data/config
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${IMAP_MCP_DOWNLOAD_DIR:-./downloads}"
+        target: /data/attachments
+        bind:
+          create_host_path: false
+    secrets:
+      - mcp_bearer_token
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  mcp_bearer_token:
+    file: "${IMAP_MCP_TOKEN_FILE:-./.imap-mcp/bearer-token}"

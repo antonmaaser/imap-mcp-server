@@ -7,7 +7,7 @@ working in this repository.
 
 ## Architecture
 
-- **Entry point** — `src/index.ts` boots an `McpServer` (MCP SDK) over **stdio**
+- **Entry point** — `src/index.ts` boots an `McpServer` (MCP SDK) over **stdio** (default) or authenticated **Streamable HTTP**
   and registers all tools via `src/tools/index.ts`.
 - **Services** (`src/services/`):
   - `ImapService` — IMAP protocol via **`imapflow`**, with connection pooling,
@@ -15,6 +15,7 @@ working in this repository.
   - `SmtpService` — outbound mail via **`nodemailer`**; composes raw MIME and sends.
   - `AccountManager` — account CRUD with **AES-256-CBC** encrypted credential
     storage at `~/.imap-mcp/accounts.json` (key at `~/.imap-mcp/.key`).
+    `IMAP_MCP_CONFIG_DIR` selects an alternative shared directory.
     Credentials can be overridden at read time via environment variables keyed
     by the account's normalized name (uppercase, non-alphanumeric → `_`):
     `IMAP_MCP_ACCOUNT_<NAME>_IMAP_USERNAME` / `_IMAP_PASSWORD` and
@@ -27,8 +28,7 @@ working in this repository.
     (`src/utils/env-credentials.ts`) is called from `ImapService.connect` and
     `SmtpService.createTransporter` and fails with the missing variable's name
     instead of dialing out blank. Keep `envVarName()` in sync with its copy in
-    `public/js/app.js` (the wizard is a static asset and cannot import it) —
-    `tests/env-credentials.test.ts` asserts the two agree.
+    `src/cli/account-config.ts`, which imports the shared function directly.
   - `SpamService` — disposable/known-spam domain detection.
 - **Tools** (`src/tools/`), grouped by area:
   - `account-tools.ts` — add / update / list / remove / connect / disconnect / test.
@@ -36,8 +36,23 @@ working in this repository.
     mark read/unread, delete, bulk delete, move, attachments, upload, threads.
   - `folder-tools.ts` — list, status, create, unread counts.
   - `spam-tools.ts` — spam analysis, domain stats, allow/deny lists.
-- **Web setup wizard** — `src/web/server.ts` (Express) serves `public/` for
-  account onboarding (`npm run setup` / `imap-setup`).
+- **CLI setup** — `src/setup.ts` with `src/cli/` replaces the removed web wizard.
+  `npm run setup -- init` prepares Docker persistence, a private bearer token and
+  `.env` before building; add/edit/list/remove/test support provider presets and
+  the wizard's JSON fields. Never print credentials or tokens.
+- **HTTP transport** — `src/http-server.ts` exposes stateless JSON Streamable
+  HTTP at `/mcp`, with fixed-digest bearer checks plus Host/Origin allow-lists.
+  `src/runtime.ts` shares services while each request has a fresh MCP server.
+  Static bearer mode requires clients supporting explicit headers; it is not
+  an OAuth discovery implementation.
+- **Persistence** — `IMAP_MCP_CONFIG_DIR` overrides `~/.imap-mcp`. Bind the whole
+  directory, never individual account/key files. Reads reload the shared store;
+  writes hold `.accounts.lock` and rename a private temporary file atomically.
+  Missing/corrupt keys and corrupt stores fail closed. SMTP edits preserve
+  encrypted credentials when password fields are omitted.
+- **Docker** — `Dockerfile`, `compose.yaml`; localhost `47863` maps to internal
+  `8787`. Non-root host UID/GID, read-only root, config and attachment binds,
+  file-mounted bearer secret. `credentials.env` injects account env overrides.
 - **Types** — `src/types/index.ts`.
 - All tools return **JSON-formatted text** content; errors are returned as
   structured JSON where practical rather than thrown for caller-facing failures.
@@ -51,11 +66,12 @@ npm test             # run the vitest suite (run mode)
 npm run test:watch   # vitest in watch mode
 npm run lint         # tsc --noEmit type-check
 npm run dev          # run the server from source (tsx watch)
-npm run setup        # launch the web setup wizard
+npm run setup -- init # prepare Docker config before building
+npm run test:docker  # build image and verify isolated Compose deployment
 ```
 
 Always run `npm run build` **and** `npm test` before committing changes that
-touch `src/`. Keep the suite green (currently 396 tests).
+touch `src/`. Keep the suite green.
 
 > Note: `npm run lint` (`tsc --noEmit`) is memory-hungry on this project — the
 > MCP SDK's `registerTool` generics are deep enough to surface a pre-existing

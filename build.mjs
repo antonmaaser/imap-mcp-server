@@ -1,5 +1,8 @@
 import * as esbuild from 'esbuild';
-import { readFileSync } from 'fs';
+import { readFileSync, rmSync } from 'fs';
+
+// Remove stale wizard bundles from previous builds.
+rmSync('dist', { recursive: true, force: true });
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'));
 
@@ -32,16 +35,6 @@ await esbuild.build({
   outfile: 'dist/setup.js',
   external,
   banner: shebang,
-});
-
-// Build web server entry point
-await esbuild.build({
-  entryPoints: ['src/web/server.ts'],
-  bundle: true,
-  platform: 'node',
-  format: 'esm',
-  outfile: 'dist/web/server.js',
-  external,
 });
 
 console.log('Build complete!');

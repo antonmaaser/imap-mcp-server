@@ -12,10 +12,15 @@ vi.mock('fs', async () => {
       readFile: vi.fn(),
       writeFile: vi.fn(),
       mkdir: vi.fn(),
+      rename: vi.fn(),
+      unlink: vi.fn(),
+      rmdir: vi.fn(),
+      chmod: vi.fn(),
     },
     readFileSync: vi.fn(),
     writeFileSync: vi.fn(),
     mkdirSync: vi.fn(),
+    existsSync: vi.fn().mockReturnValue(false),
   };
 });
 
@@ -29,12 +34,25 @@ describe('AccountManager', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // Mock encryption key file
-    vi.mocked(readFileSync).mockReturnValue(mockEncryptionKey);
+    // Model atomic writes/reloads rather than returning the key for every file.
+    const files = new Map<string, string>();
+    vi.mocked(readFileSync).mockImplementation(((filename: any) => {
+      if (String(filename).endsWith('.key')) return mockEncryptionKey;
+      const value = files.get(String(filename));
+      if (value === undefined) throw Object.assign(new Error('Not found'), { code: 'ENOENT' });
+      return value;
+    }) as any);
+    vi.mocked(fs.writeFile).mockImplementation(async (filename: any, data: any) => { files.set(String(filename), String(data)); });
+    vi.mocked(fs.rename).mockImplementation(async (source: any, destination: any) => {
+      files.set(String(destination), files.get(String(source))!);
+      files.delete(String(source));
+    });
+    vi.mocked(fs.unlink).mockResolvedValue(undefined);
+    vi.mocked(fs.rmdir).mockResolvedValue(undefined);
+    vi.mocked(fs.chmod).mockResolvedValue(undefined);
 
     // Mock accounts file not existing initially
     vi.mocked(fs.readFile).mockRejectedValue({ code: 'ENOENT' });
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
     vi.mocked(fs.mkdir).mockResolvedValue(undefined);
   });
 
@@ -57,7 +75,7 @@ describe('AccountManager', () => {
 
     it('should create encryption key if not exists', () => {
       vi.mocked(readFileSync).mockImplementation(() => {
-        throw new Error('File not found');
+        throw Object.assign(new Error('File not found'), { code: 'ENOENT' });
       });
 
       const manager = new AccountManager();

@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
-import { join } from 'path';
 import type { ImapAccount } from '../src/types/index.js';
 import { assertCredentialsResolved, envVarName, envAccountKey } from '../src/utils/env-credentials.js';
 
@@ -83,24 +81,5 @@ describe('assertCredentialsResolved', () => {
   it('does not fire on a checking-only IMAP field when validating SMTP', () => {
     const acc = account({ smtp: { host: 'smtp.gmail.com', port: 587, secure: false, user: 'smtpuser', password: 'smtppass' } } as Partial<ImapAccount>);
     expect(() => assertCredentialsResolved(acc, 'smtp')).not.toThrow();
-  });
-});
-
-// The wizard is a static asset and cannot import the server module, so the
-// normalization is written out twice. Assert the copies agree.
-describe('wizard/server env var name parity', () => {
-  it('public/js/app.js normalizes account names the same way', () => {
-    const appJs = readFileSync(join(process.cwd(), 'public/js/app.js'), 'utf-8');
-    const match = appJs.match(/function envVarName\(accountName, suffix\) \{([\s\S]*?)\n\}/);
-    expect(match, 'envVarName() not found in public/js/app.js').toBeTruthy();
-
-    // eslint-disable-next-line no-new-func
-    const wizardEnvVarName = new Function('accountName', 'suffix', match![1]) as
-      (accountName: string, suffix: string) => string;
-
-    for (const name of ['Work Gmail', 'mail.example.com', 'Büro-2', 'a1']) {
-      expect(wizardEnvVarName(name, '_IMAP_PASSWORD'))
-        .toBe(envVarName(name, '_IMAP_PASSWORD'));
-    }
   });
 });

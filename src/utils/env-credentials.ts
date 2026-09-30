@@ -13,8 +13,8 @@ export const ENV_CREDENTIAL_SUFFIXES = {
 
 /**
  * Normalize an account name into the key segment of its env variables:
- * uppercase, every non-alphanumeric character replaced by "_". Mirrored in
- * `public/js/app.js` so the setup wizard can display the exact variable name.
+ * uppercase, every non-alphanumeric character replaced by "_". The CLI imports
+ * this function to display the exact runtime variable name.
  */
 export function envAccountKey(accountName: string): string {
   return accountName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
@@ -25,7 +25,7 @@ export function envVarName(accountName: string, suffix: string): string {
 }
 
 /**
- * An empty credential is the marker the setup wizard writes for "supplied via
+ * An empty credential is the marker the setup CLI writes for "supplied via
  * environment variable". If the variable was not set when the server started,
  * the field is still empty by the time we dial out — and the provider answers
  * with a generic authentication failure that looks exactly like a wrong

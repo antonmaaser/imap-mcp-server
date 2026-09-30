@@ -1,5 +1,5 @@
 import { promises as fs } from 'fs';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
@@ -15,91 +15,102 @@ export class AccountManager {
   private static readonly ENV_OVERRIDE_PATTERN =
     /^IMAP_MCP_ACCOUNT_.+_(?:IMAP|SMTP)_(?:USERNAME|PASSWORD)$/;
 
-  constructor() {
-    this.configPath = path.join(os.homedir(), '.imap-mcp', 'accounts.json');
+  constructor(configDir = process.env.IMAP_MCP_CONFIG_DIR || path.join(os.homedir(), '.imap-mcp')) {
+    this.configPath = path.join(path.resolve(configDir), 'accounts.json');
     this.encryptionKey = this.getOrCreateEncryptionKey();
     this.captureEnvOverrides();
     this.loadAccountsSync();
   }
 
   async addAccount(account: Omit<ImapAccount, 'id'>): Promise<ImapAccount> {
-    const id = crypto.randomUUID();
-    const newAccount: ImapAccount = {
-      ...account,
-      id,
-      password: this.encrypt(account.password),
-    };
-
-    // Encrypt SMTP password if provided
-    if (account.smtp?.password) {
-      newAccount.smtp = {
-        ...account.smtp,
-        password: this.encrypt(account.smtp.password),
+    return this.withStoreLock(async () => {
+      const id = crypto.randomUUID();
+      const newAccount: ImapAccount = {
+        ...account,
+        id,
+        password: this.encrypt(account.password),
       };
-    }
 
-    this.accounts.set(id, newAccount);
-    await this.saveAccounts();
-    
-    return { ...newAccount, password: account.password, smtp: account.smtp };
+      // Encrypt SMTP password if provided
+      if (account.smtp?.password) {
+        newAccount.smtp = {
+          ...account.smtp,
+          password: this.encrypt(account.smtp.password),
+        };
+      }
+
+      this.accounts.set(id, newAccount);
+      await this.saveAccounts();
+
+      return { ...newAccount, password: account.password, smtp: account.smtp };
+    });
   }
 
 
   async removeAccount(id: string): Promise<void> {
-    if (!this.accounts.has(id)) {
-      throw new Error(`Account ${id} not found`);
-    }
+    return this.withStoreLock(async () => {
+      if (!this.accounts.has(id)) {
+        throw new Error(`Account ${id} not found`);
+      }
 
-    this.accounts.delete(id);
-    await this.saveAccounts();
+      this.accounts.delete(id);
+      await this.saveAccounts();
+    });
   }
 
   async updateAccount(id: string, updates: Partial<Omit<ImapAccount, 'id'>>): Promise<ImapAccount> {
-    const existingAccount = this.accounts.get(id);
-    if (!existingAccount) {
-      throw new Error(`Account with id ${id} not found`);
-    }
+    return this.withStoreLock(async () => {
+      const existingAccount = this.accounts.get(id);
+      if (!existingAccount) {
+        throw new Error(`Account with id ${id} not found`);
+      }
 
-    // Encrypt password if it's being updated. Use an explicit undefined check so
-    // an empty placeholder ("" — used for env-managed credentials) is encrypted
-    // to a decryptable value rather than stored raw.
-    const processedUpdates = { ...updates };
-    if (processedUpdates.password !== undefined) {
-      processedUpdates.password = this.encrypt(processedUpdates.password);
-    }
-    
-    // Encrypt SMTP password if it's being updated
-    if (processedUpdates.smtp?.password) {
-      processedUpdates.smtp = {
-        ...processedUpdates.smtp,
-        password: this.encrypt(processedUpdates.smtp.password),
+      // Encrypt password if it's being updated. Use an explicit undefined check so
+      // an empty placeholder ("" — used for env-managed credentials) is encrypted
+      // to a decryptable value rather than stored raw.
+      const processedUpdates = { ...updates };
+      if (processedUpdates.password !== undefined) {
+        processedUpdates.password = this.encrypt(processedUpdates.password);
+      }
+
+      // Encrypt SMTP password if it's being updated
+      if (processedUpdates.smtp) {
+        processedUpdates.smtp = {
+          ...existingAccount.smtp,
+          ...processedUpdates.smtp,
+          ...(processedUpdates.smtp.password !== undefined
+            ? { password: this.encrypt(processedUpdates.smtp.password) } : {}),
+        };
+        if (!processedUpdates.smtp.host || !processedUpdates.smtp.port) {
+          throw new Error('SMTP host and port are required when adding SMTP configuration.');
+        }
+      }
+
+      // Merge updates with existing account
+      const updatedAccount: ImapAccount = {
+        ...existingAccount,
+        ...processedUpdates,
+        id, // Ensure ID doesn't change
       };
-    }
 
-    // Merge updates with existing account
-    const updatedAccount: ImapAccount = {
-      ...existingAccount,
-      ...processedUpdates,
-      id, // Ensure ID doesn't change
-    };
+      this.accounts.set(id, updatedAccount);
+      await this.saveAccounts();
 
-    this.accounts.set(id, updatedAccount);
-    await this.saveAccounts();
-
-    // Return decrypted version
-    const decrypted: ImapAccount = {
-      ...updatedAccount,
-      password: this.decrypt(updatedAccount.password),
-    };
-    
-    if (updatedAccount.smtp?.password) {
-      decrypted.smtp = {
-        ...updatedAccount.smtp,
-        password: this.decrypt(updatedAccount.smtp.password),
+      // Return decrypted version
+      const decrypted: ImapAccount = {
+        ...updatedAccount,
+        password: this.decryptField(updatedAccount.password),
       };
-    }
-    
-    return decrypted;
+
+      if (updatedAccount.smtp?.password) {
+        decrypted.smtp = {
+          ...updatedAccount.smtp,
+          password: this.decrypt(updatedAccount.smtp.password),
+        };
+      }
+
+      return decrypted;
+    });
   }
 
   getAccount(id: string): ImapAccount | undefined {
@@ -215,6 +226,7 @@ export class AccountManager {
   }
 
   getAllAccounts(): ImapAccount[] {
+    this.loadAccountsSync();
     return Array.from(this.accounts.values()).map(account => {
       const decrypted: ImapAccount = {
         ...account,
@@ -262,7 +274,7 @@ export class AccountManager {
       return all[0].id;
     }
     if (all.length === 0) {
-      throw new Error('No accounts configured. Add one with imap_add_account (or run the setup wizard).');
+      throw new Error('No accounts configured. Add one with imap_add_account (or run imap-setup add).');
     }
     throw new Error(
       `Multiple accounts are configured (${all.length}). Specify accountId or accountName. Use imap_list_accounts to see them.`
@@ -270,6 +282,7 @@ export class AccountManager {
   }
 
   getAccountByName(name: string): ImapAccount | undefined {
+    this.loadAccountsSync();
     const account = Array.from(this.accounts.values()).find(acc => acc.name === name);
     if (!account) return undefined;
 
@@ -290,29 +303,59 @@ export class AccountManager {
 
   private loadAccountsSync(): void {
     try {
-      const data = readFileSync(this.configPath, 'utf-8');
-      const accounts = JSON.parse(data) as ImapAccount[];
-
-      this.accounts.clear();
-      for (const account of accounts) {
-        this.accounts.set(account.id, account);
+      const accounts: unknown = JSON.parse(readFileSync(this.configPath, 'utf-8'));
+      if (!Array.isArray(accounts) || accounts.some(account =>
+        !account || typeof account.id !== 'string' || typeof account.name !== 'string'
+      ) || new Set(accounts.map(account => account.id)).size !== accounts.length) {
+        throw new Error('Invalid account store');
       }
+      this.accounts = new Map(accounts.map(account => [account.id, account as ImapAccount]));
     } catch (error) {
-      // File doesn't exist yet, that's okay
-      if ((error as any).code !== 'ENOENT') {
-        console.error('Error loading accounts:', error);
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.accounts.clear();
+        return;
       }
+      // JSON parse messages can include the offending credential bytes.
+      throw new Error('Cannot load accounts.json. Check its format and permissions; it has not been overwritten.');
+    }
+  }
+
+  async initialize(): Promise<void> {
+    await this.withStoreLock(() => this.saveAccounts());
+  }
+
+  private async withStoreLock<T>(operation: () => Promise<T>): Promise<T> {
+    const dir = path.dirname(this.configPath);
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    const lockPath = path.join(dir, '.accounts.lock');
+    const deadline = Date.now() + 5000;
+    while (true) {
+      try {
+        await fs.mkdir(lockPath, { mode: 0o700 });
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error('Cannot lock the account store. Check permissions.');
+        if (Date.now() >= deadline) throw new Error('Account store is locked. Retry, or remove .accounts.lock only after stopping all writers.');
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+    }
+    try {
+      this.loadAccountsSync();
+      return await operation();
+    } finally {
+      await fs.rmdir(lockPath);
     }
   }
 
   private async saveAccounts(): Promise<void> {
-    const dir = path.dirname(this.configPath);
-    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-
-    const accounts = Array.from(this.accounts.values());
-    await fs.writeFile(this.configPath, JSON.stringify(accounts, null, 2), { mode: 0o600 });
-
-    await this.enforceStorePermissions();
+    const temporaryPath = `${this.configPath}.${crypto.randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(temporaryPath, JSON.stringify([...this.accounts.values()], null, 2), { mode: 0o600, flag: 'wx' });
+      await fs.rename(temporaryPath, this.configPath);
+      await this.enforceStorePermissions();
+    } finally {
+      await fs.unlink(temporaryPath).catch(() => {});
+    }
   }
 
   /**
@@ -346,16 +389,24 @@ export class AccountManager {
   }
 
   private getOrCreateEncryptionKey(): string {
-    const keyPath = path.join(os.homedir(), '.imap-mcp', '.key');
-    
+    const keyPath = path.join(path.dirname(this.configPath), '.key');
+    const validate = (key: string) => {
+      if (!/^[a-fA-F0-9]{64}$/.test(key)) throw new Error('Invalid .key file. Restore the original encryption key.');
+      return key;
+    };
     try {
-      return readFileSync(keyPath, 'utf-8');
-    } catch {
+      return validate(readFileSync(keyPath, 'utf-8'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Cannot read .key. Check permissions and restore the original encryption key.');
+      if (existsSync(this.configPath)) throw new Error('accounts.json exists without .key. Restore its original key before continuing.');
       const key = crypto.randomBytes(32).toString('hex');
-      // Owner-only from the moment of creation: the key alone can decrypt every
-      // stored credential (see enforceStorePermissions).
       mkdirSync(path.dirname(keyPath), { recursive: true, mode: 0o700 });
-      writeFileSync(keyPath, key, { mode: 0o600 });
+      try {
+        writeFileSync(keyPath, key, { mode: 0o600, flag: 'wx' });
+      } catch (writeError) {
+        if ((writeError as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error('Cannot create .key. Check configuration directory permissions.');
+        return validate(readFileSync(keyPath, 'utf-8'));
+      }
       return key;
     }
   }

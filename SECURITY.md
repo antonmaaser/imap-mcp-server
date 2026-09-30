@@ -7,13 +7,19 @@ control**.
 ## Security model
 
 - **Local execution.** The server runs entirely on your own machine as a local
-  MCP process (stdio). It is not a hosted service and does not require any
-  account with this project.
+  MCP process (stdio), or as authenticated HTTP behind your HTTPS reverse
+  proxy. Docker publishes only on host loopback and requires a private bearer
+  token. There is no hosted service or project account.
 - **Credential storage.** IMAP/SMTP credentials are stored encrypted with
   **AES-256-CBC** in `~/.imap-mcp/accounts.json`. The encryption key is generated
   locally and kept at `~/.imap-mcp/.key`. The store directory and both files are
   written owner-only (`0700`/`0600`) so other local users cannot read them;
   anyone who can read both files can read your credentials.
+- **Remote authentication.** Every `/mcp` method checks a static bearer token
+  with constant-time digest comparison, Host and Origin validation. This mode
+  requires clients supporting explicit headers; it does not provide OAuth
+  discovery. The token grants access to all configured accounts and enabled
+  tools. Terminate HTTPS at your proxy and keep token files private.
 - **No telemetry.** The server collects no analytics, usage data, or crash
   reports.
 - **No third-party data sharing.** The only outbound network connections are to
