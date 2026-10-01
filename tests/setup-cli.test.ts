@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { AccountManager } from '../src/services/account-manager.js';
 import { accountFromInput, accountUpdatesFromInput, parseAccountInput, requiredCredentialVariables, stripAccountSecrets } from '../src/cli/account-config.js';
-import { initializeDeployment, ensureToken } from '../src/cli/deployment.js';
+import { initializeDeployment } from '../src/cli/deployment.js';
 import { setupClaudeIntegration } from '../src/setup.js';
 import { getProviderByEmail } from '../src/providers/email-providers.js';
 
@@ -63,34 +63,31 @@ describe('CLI replaces account wizard logic', () => {
 
 describe('deployment initialization and CLI execution', () => {
   const options = () => ({ configDir: path.join(dir, 'config'), downloadDir: path.join(dir, 'downloads'), envFile: path.join(dir, '.env'), uid: 1000, gid: 1000 });
-  it('creates secure shared files before a build and preserves existing env/token/accounts on rerun', async () => {
+  it('creates secure shared files before a build and preserves existing env/accounts on rerun', async () => {
     const result = await initializeDeployment(options());
     expect(result.createdEnv).toBe(true);
     const store = new AccountManager(result.configDir);
     await store.addAccount(accountFromInput({ email: 'me@gmail.com', password: 'test-password' }));
-    const token = await fs.readFile(result.tokenPath, 'utf8');
+    expect(await fs.readdir(result.configDir)).not.toContain('bearer-token');
+    expect(await fs.readFile(result.envFile, 'utf8')).toContain('IMAP_MCP_OAUTH_SCOPES=\"imap:access\"');
     const key = await fs.readFile(path.join(result.configDir, '.key'), 'utf8');
     await fs.appendFile(result.envFile, 'IMAP_MCP_READ_ONLY=true\n');
     expect((await initializeDeployment(options())).createdEnv).toBe(false);
-    expect(await fs.readFile(result.tokenPath, 'utf8')).toBe(token);
     expect(await fs.readFile(path.join(result.configDir, '.key'), 'utf8')).toBe(key);
     expect(new AccountManager(result.configDir).getAllAccounts()).toHaveLength(1);
     expect(await fs.readFile(result.envFile, 'utf8')).toContain('IMAP_MCP_READ_ONLY=true');
     if (process.platform !== 'win32') {
-      expect((await fs.stat(result.tokenPath)).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(result.envFile)).mode & 0o777).toBe(0o600);
       expect((await fs.stat(result.configDir)).mode & 0o777).toBe(0o700);
     }
   });
-  it('rotates only on explicit request and refuses weak pre-existing tokens', async () => {
-    const file = await ensureToken(dir);
-    const first = await fs.readFile(file, 'utf8');
-    await ensureToken(dir);
-    expect(await fs.readFile(file, 'utf8')).toBe(first);
-    await ensureToken(dir, true);
-    expect(await fs.readFile(file, 'utf8')).not.toBe(first);
-    await fs.writeFile(file, 'weak');
-    await expect(ensureToken(dir)).rejects.toThrow(/rotate/);
-    expect(await fs.readFile(file, 'utf8')).toBe('weak');
+  it('writes validated OAuth configuration and rejects partial/unsafe values before touching storage', async () => {
+    await expect(initializeDeployment({ ...options(), oauthIssuer: 'https://auth.test/realms/mail' })).rejects.toThrow();
+    await expect(fs.stat(options().configDir)).rejects.toThrow();
+    const result = await initializeDeployment({ ...options(), oauthIssuer: 'https://auth.test/realms/mail',
+      oauthResourceUrl: 'https://mail.test/mcp', oauthScopes: 'imap:access' });
+    expect(await fs.readFile(result.envFile, 'utf8')).toContain('IMAP_MCP_OAUTH_ISSUER="https://auth.test/realms/mail"');
+    expect(await fs.readFile(result.envFile, 'utf8')).not.toContain('TOKEN_FILE');
   });
   it('generates Claude stdio configuration from the module location and retains unrelated entries', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -113,7 +110,8 @@ describe('deployment initialization and CLI execution', () => {
     const inputPath = path.join(dir, 'input.json');
     await fs.writeFile(inputPath, JSON.stringify({ name: 'CLI Test', email: 'me@gmail.com', password: 'private-test-password' }));
     const invoke = (...args: string[]) => exec(process.execPath, [tsx, cli, '--config-dir', configDir, ...args], { cwd: dir });
-    const init = await invoke('init', '--uid', '1000', '--gid', '1000', '--compose-env-file', path.join(dir, '.env'));
+    const init = await invoke('init', '--uid', '1000', '--gid', '1000', '--compose-env-file', path.join(dir, '.env'), '--oauth-issuer', 'https://auth.test/realms/mail', '--oauth-resource-url', 'https://mail.test/mcp');
+    expect(await fs.readFile(path.join(dir, '.env'), 'utf8')).toContain('IMAP_MCP_OAUTH_RESOURCE_URL=\"https://mail.test/mcp\"');
     expect(init.stdout).not.toContain('private-test-password');
     const add = await invoke('add', '--input', inputPath);
     expect(add.stdout).toContain('Account added');

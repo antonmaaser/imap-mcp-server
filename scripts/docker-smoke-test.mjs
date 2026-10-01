@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { startOAuthFixture } from '../tests/helpers/oauth-fixture.mjs';
 
 const exec = promisify(execFile);
 const root = path.resolve(import.meta.dirname, '..');
@@ -20,13 +21,14 @@ const composeArgs = ['compose', '--project-name', `imap-smoke-${process.pid}`, '
 const compose = (...args) => { stage = `Compose ${args[0]}`; return exec('docker', [...composeArgs, ...args], { cwd: root, maxBuffer: 1024 * 1024 }); };
 let started = false;
 let client;
+const oauth = await startOAuthFixture('0.0.0.0', 'host.docker.internal');
 try {
-  await cli('init', '--download-dir', downloadDir, '--compose-env-file', envFile);
+  await cli('init', '--download-dir', downloadDir, '--compose-env-file', envFile, '--oauth-issuer', oauth.issuer, '--oauth-resource-url', oauth.state.resource, '--oauth-allow-insecure-http');
   await fs.appendFile(envFile, 'IMAP_MCP_ENABLED_TOOLS=imap_list_accounts,imap_add_account,imap_update_account,imap_remove_account,imap_upload_file\n');
   const credentials = path.join(temporary, 'credentials.env');
   await fs.writeFile(credentials, 'IMAP_MCP_ACCOUNT_SMOKE_IMAP_USERNAME=runtime-user\nIMAP_MCP_ACCOUNT_SMOKE_IMAP_PASSWORD=runtime-test-password\n', { mode: 0o600 });
   // An ephemeral loopback port avoids disrupting an existing deployment.
-  await fs.writeFile(path.join(temporary, 'override.yaml'), `services:\n  imap-mcp:\n    ports: !override\n      - "127.0.0.1::8787"\n    env_file: !override\n      - path: ${credentials}\n        format: raw\n`);
+  await fs.writeFile(path.join(temporary, 'override.yaml'), `services:\n  imap-mcp:\n    extra_hosts:\n      - "host.docker.internal:host-gateway"\n    ports: !override\n      - "127.0.0.1::8787"\n    env_file: !override\n      - path: ${credentials}\n        format: raw\n`);
   const inputPath = path.join(temporary, 'input.json');
   await fs.writeFile(inputPath, JSON.stringify({ name: 'Smoke', email: 'test@example.test', host: 'imap.example.test',
     smtp: null, imapUsernameFromEnv: true, imapPasswordFromEnv: true }), { mode: 0o600 });
@@ -42,7 +44,12 @@ try {
   assert.equal(inspect.HostConfig.ReadonlyRootfs, true);
   assert.equal(inspect.HostConfig.PortBindings['8787/tcp'][0].HostIp, '127.0.0.1');
   assert.notEqual(inspect.Config.User.split(':')[0], '0');
-  const token = (await fs.readFile(path.join(configDir, 'bearer-token'), 'utf8')).trim();
+  const token = await oauth.token();
+  const discovery = await (await fetch(`${base}/.well-known/oauth-protected-resource/mcp`)).json();
+  assert.deepEqual(discovery.authorization_servers, [oauth.issuer]);
+  assert.equal(discovery.resource, oauth.state.resource);
+  assert.equal((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${await oauth.token({ aud: 'wrong' })}` } })).status, 401);
+  assert.equal((await fetch(`${base}/mcp`, { headers: { Authorization: `Bearer ${await oauth.token({ scope: 'openid' })}` } })).status, 403);
   assert.equal((await fetch(`${base}/mcp`)).status, 401);
   assert.equal((await fetch(`${base}/mcp?access_token=${token}`, { method: 'POST' })).status, 401);
   client = new Client({ name: 'docker-smoke', version: '1.0.0' });
@@ -103,5 +110,6 @@ try {
 } finally {
   await client?.close().catch(() => {});
   if (started) await compose('down', '--remove-orphans').catch(() => {});
+  await oauth.close();
   await fs.rm(temporary, { recursive: true, force: true });
 }

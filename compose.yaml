@@ -14,7 +14,10 @@ services:
       IMAP_MCP_PORT: "8787"
       IMAP_MCP_CONFIG_DIR: /data/config
       IMAP_DOWNLOAD_DIR: /data/attachments
-      IMAP_MCP_BEARER_TOKEN_FILE: /run/secrets/mcp_bearer_token
+      IMAP_MCP_OAUTH_ISSUER: "${IMAP_MCP_OAUTH_ISSUER:?Set the public Keycloak realm issuer URL}"
+      IMAP_MCP_OAUTH_RESOURCE_URL: "${IMAP_MCP_OAUTH_RESOURCE_URL:?Set the canonical public MCP URL ending in /mcp}"
+      IMAP_MCP_OAUTH_SCOPES: "${IMAP_MCP_OAUTH_SCOPES:-imap:access}"
+      IMAP_MCP_OAUTH_ALLOW_INSECURE_HTTP: "${IMAP_MCP_OAUTH_ALLOW_INSECURE_HTTP:-false}"
       IMAP_MCP_ALLOWED_HOSTS: "${IMAP_MCP_ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}"
       IMAP_MCP_ALLOWED_ORIGINS: "${IMAP_MCP_ALLOWED_ORIGINS:-}"
       IMAP_MCP_READ_ONLY: "${IMAP_MCP_READ_ONLY:-false}"
@@ -40,8 +43,6 @@ services:
         target: /data/attachments
         bind:
           create_host_path: false
-    secrets:
-      - mcp_bearer_token
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m,mode=1777
@@ -55,7 +56,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-secrets:
-  mcp_bearer_token:
-    file: "${IMAP_MCP_TOKEN_FILE:-./.imap-mcp/bearer-token}"

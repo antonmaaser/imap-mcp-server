@@ -37,14 +37,17 @@ working in this repository.
   - `folder-tools.ts` — list, status, create, unread counts.
   - `spam-tools.ts` — spam analysis, domain stats, allow/deny lists.
 - **CLI setup** — `src/setup.ts` with `src/cli/` replaces the removed web wizard.
-  `npm run setup -- init` prepares Docker persistence, a private bearer token and
-  `.env` before building; add/edit/list/remove/test support provider presets and
+  `npm run setup -- init` prepares Docker persistence and OAuth `.env` before
+  building; add/edit/list/remove/test support provider presets and
   the wizard's JSON fields. Never print credentials or tokens.
 - **HTTP transport** — `src/http-server.ts` exposes stateless JSON Streamable
-  HTTP at `/mcp`, with fixed-digest bearer checks plus Host/Origin allow-lists.
+  HTTP at `/mcp`, with Keycloak OAuth JWT validation plus Host/Origin allow-lists.
   `src/runtime.ts` shares services while each request has a fresh MCP server.
-  Static bearer mode requires clients supporting explicit headers; it is not
-  an OAuth discovery implementation.
+  `src/oauth.ts` discovers the configured realm and validates RS256 access tokens
+  against cached JWKS, issuer, canonical resource URL audience, expiry and scope.
+  Public RFC 9728 metadata and WWW-Authenticate challenges enable client discovery.
+  Login, PKCE, registration and refresh belong to Keycloak/the MCP client; no
+  static-token fallback. Authorized users share all configured mailboxes.
 - **Persistence** — `IMAP_MCP_CONFIG_DIR` overrides `~/.imap-mcp`. Bind the whole
   directory, never individual account/key files. Reads reload the shared store;
   writes hold `.accounts.lock` and rename a private temporary file atomically.
@@ -52,7 +55,8 @@ working in this repository.
   encrypted credentials when password fields are omitted.
 - **Docker** — `Dockerfile`, `compose.yaml`; localhost `47863` maps to internal
   `8787`. Non-root host UID/GID, read-only root, config and attachment binds,
-  file-mounted bearer secret. `credentials.env` injects account env overrides.
+  OAuth issuer/resource/scope environment settings. `credentials.env` injects
+  account env overrides.
 - **Types** — `src/types/index.ts`.
 - All tools return **JSON-formatted text** content; errors are returned as
   structured JSON where practical rather than thrown for caller-facing failures.
@@ -95,7 +99,8 @@ touch `src/`. Keep the suite green.
    backward-compatible changes (new optional fields) over breaking ones.
 4. **Credentials stay local.** Do not add telemetry, analytics, crash reporting,
    or any third-party network calls. The only outbound connections are to the
-   user's own IMAP/SMTP servers.
+   user's own IMAP/SMTP servers and the explicitly configured Keycloak realm
+   for public discovery/signing keys. Never forward MCP tokens to mail servers.
 5. **Validate and sanitize file paths** for attachment upload/download (already
    done via `path.basename`); keep writes confined to the configured directories.
 

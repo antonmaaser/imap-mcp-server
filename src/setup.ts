@@ -11,7 +11,8 @@ import { ImapService } from './services/imap-service.js';
 import { emailProviders, getProviderByEmail, getProviderById } from './providers/email-providers.js';
 import type { ImapAccount } from './types/index.js';
 import { accountFromInput, accountUpdatesFromInput, parseAccountInput, requiredCredentialVariables, stripAccountSecrets } from './cli/account-config.js';
-import { initializeDeployment, ensureToken } from './cli/deployment.js';
+import { initializeDeployment } from './cli/deployment.js';
+import { readOAuthConfig, createOAuthVerifier, resourceMetadataUrl } from './oauth.js';
 
 async function readInput(filename: string): Promise<unknown> {
   try {
@@ -119,7 +120,11 @@ export async function runSetup(argv = process.argv) {
   const configDir = (docker = false) => path.resolve(program.opts().configDir || process.env.IMAP_MCP_CONFIG_DIR ||
     (docker ? './.imap-mcp' : path.join(os.homedir(), '.imap-mcp')));
   const manager = () => new AccountManager(configDir());
-  program.command('init').description('Prepare Docker persistence, token and .env before building; never overwrite an existing .env')
+  program.command('init').description('Prepare Docker persistence and OAuth .env before building; never overwrite an existing .env')
+    .option('--oauth-issuer <url>', 'Exact public Keycloak realm issuer URL')
+    .option('--oauth-resource-url <url>', 'Canonical public HTTPS MCP endpoint ending in /mcp; also the token audience')
+    .option('--oauth-scopes <scopes>', 'Space-separated required OAuth scopes', 'imap:access')
+    .option('--oauth-allow-insecure-http', 'Allow HTTP OAuth URLs for isolated testing only')
     .option('--download-dir <directory>', 'Host attachment directory')
     .option('--compose-env-file <file>', 'Compose configuration file', '.env')
     .option('--uid <number>', 'Non-root numeric container user', Number)
@@ -128,9 +133,11 @@ export async function runSetup(argv = process.argv) {
       const result = await initializeDeployment({
         configDir: configDir(true), downloadDir: options.downloadDir || process.env.IMAP_MCP_DOWNLOAD_DIR || './downloads',
         envFile: options.composeEnvFile, uid: options.uid, gid: options.gid,
+        oauthIssuer: options.oauthIssuer, oauthResourceUrl: options.oauthResourceUrl,
+        oauthScopes: options.oauthScopes, oauthAllowInsecureHttp: options.oauthAllowInsecureHttp,
       });
       console.log(`Deployment prepared. Shared accounts directory: ${result.configDir}`);
-      console.log(`Bearer token file: ${result.tokenPath} (value never printed)`);
+      console.log('HTTP requires IMAP_MCP_OAUTH_ISSUER and IMAP_MCP_OAUTH_RESOURCE_URL in the deployment .env.');
       console.log(result.createdEnv ? `Created ${result.envFile}.` : `Existing ${result.envFile} preserved; verify its paths and UID/GID match these directories.`);
       console.log('Add accounts with imap-setup --config-dir <directory> add, then docker compose up --build -d.');
     });
@@ -174,9 +181,13 @@ export async function runSetup(argv = process.argv) {
         console.log(JSON.stringify({ success: true, folders: result.folders, messageCount: result.messageCount }, null, 2));
       } finally { await service.disconnectAll(); }
     });
-  program.command('token').description('Ensure a bearer token file exists; never print the token')
-    .option('--rotate', 'Explicitly replace the token; update clients and force-recreate the container')
-    .action(async options => { console.log(`Bearer token file: ${await ensureToken(configDir(true), options.rotate)}`); });
+  program.command('oauth-check').description('Validate OAuth environment and contact the configured Keycloak discovery endpoint (no mailbox connection)')
+    .action(async () => {
+      const config = readOAuthConfig();
+      await createOAuthVerifier(config);
+      console.log(`OAuth discovery verified. Resource metadata URL: ${resourceMetadataUrl(config)}`);
+      console.log('Token issuance, signing-key retrieval and client login still require an end-to-end client test.');
+    });
   program.command('claude-config').description('Explicitly configure Claude Desktop for local stdio use (requires npm run build)')
     .action(() => setupClaudeIntegration(configDir()));
   await program.parseAsync(argv);

@@ -2,6 +2,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import dotenv from 'dotenv';
 import { createRuntime } from './runtime.js';
 import { createHttpApp, readHttpConfig } from './http-server.js';
+import { createOAuthVerifier } from './oauth.js';
 
 dotenv.config({ quiet: true });
 
@@ -10,10 +11,11 @@ async function main() {
   if (mode !== 'stdio' && mode !== 'http') throw new Error('IMAP_MCP_TRANSPORT must be stdio or http.');
   // Validate auth before touching account files or opening a listener.
   const config = mode === 'http' ? readHttpConfig() : undefined;
+  const verifier = config ? await createOAuthVerifier(config.oauth) : undefined;
   const runtime = createRuntime();
   const closeTransport = config
     ? await new Promise<() => Promise<void>>((resolve, reject) => {
-      const listener = createHttpApp(config, runtime.createServer).listen(config.port, config.host, error => {
+      const listener = createHttpApp(config, runtime.createServer, verifier!).listen(config.port, config.host, error => {
         if (error) { reject(error); return; }
         console.error(`IMAP MCP HTTP server listening on ${config.host}:${config.port}/mcp`);
         resolve(() => new Promise<void>((done) => { listener.close(() => done()); }));

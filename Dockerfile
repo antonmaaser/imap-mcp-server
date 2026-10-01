@@ -13,8 +13,7 @@ ENV NODE_ENV=production \
     IMAP_MCP_HOST=0.0.0.0 \
     IMAP_MCP_PORT=8787 \
     IMAP_MCP_CONFIG_DIR=/data/config \
-    IMAP_DOWNLOAD_DIR=/data/attachments \
-    IMAP_MCP_BEARER_TOKEN_FILE=/data/config/bearer-token
+    IMAP_DOWNLOAD_DIR=/data/attachments
 WORKDIR /app
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist

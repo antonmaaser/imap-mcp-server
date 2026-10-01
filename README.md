@@ -39,13 +39,13 @@ npm ci
 # Configure accounts and persistence before building the image:
 npm run setup -- init
 npm run setup -- add
-# Add your public hostname to IMAP_MCP_ALLOWED_HOSTS in .env first.
+# Set IMAP_MCP_OAUTH_ISSUER, IMAP_MCP_OAUTH_RESOURCE_URL and your public hostname in .env first.
 docker compose up --build -d
 ```
 
 Requires Docker with Compose **2.30 or newer**. The CLI generates `.env` with
 absolute host paths and your numeric UID/GID. It creates `.imap-mcp/accounts.json`,
-`.imap-mcp/.key`, `.imap-mcp/bearer-token`, and `downloads/` before the build.
+`.imap-mcp/.key` and `downloads/` before the build.
 Passwords are encrypted through the same `AccountManager` used by MCP tools.
 The image build never reads this configuration; `.dockerignore` allows only
 source and package/build files into the context.
@@ -65,18 +65,23 @@ from the generated `.env`. Always run from the repository directory or provide
 `--config-dir /absolute/path/to/config` when editing a Docker deployment.
 
 ```bash
-npm run setup -- init                  # Docker files, token, UID/GID and .env
+npm run setup -- init                  # Docker files, OAuth config, UID/GID and .env
 npm run setup -- providers             # Provider IDs and connection presets
 npm run setup -- add                   # Interactive; passwords are hidden
 npm run setup -- list                  # No passwords in the output
 npm run setup -- edit ACCOUNT_ID       # Blank password retains the existing one
 npm run setup -- test ACCOUNT_ID       # Explicit IMAP connection/folder test
 npm run setup -- remove ACCOUNT_ID     # Removes only that account configuration
-npm run setup -- token --rotate        # Then update clients and recreate container
+npm run setup -- oauth-check           # Validate env and Keycloak discovery
 npm run setup -- claude-config         # Optional local stdio client configuration
 ```
 
-`init` retains existing accounts, encryption keys, bearer tokens and `.env`.
+`init` retains existing accounts, encryption keys and `.env`. It does not create
+a static bearer secret. Configure OAuth before starting HTTP; blank URLs fail closed.
+You can supply `init --oauth-issuer https://auth.example.com/realms/mail-mcp
+--oauth-resource-url https://mail-mcp.example.com/mcp --oauth-scopes "imap:access"`
+on one command line to generate these settings. Existing `.env` files are preserved,
+so flags do not silently migrate an existing deployment.
 If it preserves an existing `.env`, verify its paths and UID/GID match the
 prepared directories. `init --download-dir /path --compose-env-file /path/.env`
 customizes deployment output; use Compose `--env-file` for a non-default file.
@@ -144,7 +149,6 @@ configuration rather than treating its own `127.0.0.1` as the Docker host.
 | --- | --- | --- |
 | `IMAP_MCP_CONFIG_DIR` (default `.imap-mcp/`) | `/data/config` (read/write) | Shared encrypted accounts and `.key` |
 | `IMAP_MCP_DOWNLOAD_DIR` (default `downloads/`) | `/data/attachments` (read/write) | Downloads and uploaded attachments |
-| `IMAP_MCP_TOKEN_FILE` (default `.imap-mcp/bearer-token`) | `/run/secrets/mcp_bearer_token` (read-only) | Bearer secret |
 | `credentials.env` (optional) | Process environment | Runtime-only account credential overrides |
 
 The configuration and attachment directories are bind mounts so the host CLI,
@@ -155,62 +159,97 @@ caller-selected save paths. Compose refuses to create missing bind paths;
 run `init` first. The container uses your non-root UID/GID, a read-only root
 filesystem, dropped capabilities, `no-new-privileges`, temporary `/tmp`, bounded
 logs and a liveness check at `/healthz`. `.key` and `accounts.json` are owner-only,
-and the generated bearer token is 256 random bits stored with mode `0600`.
-Compose file secrets are bind-mounted files, so their readability comes from
-host permissions and the configured user; changing Compose secret `uid`/`gid`
-is not a substitute for correct ownership.
+with private file permissions. OAuth signing keys are fetched from the configured
+Keycloak realm; no authentication client secret or static token is stored here.
 
-### Bearer authentication
+### OAuth authorization
 
-Every method on `/mcp` requires `Authorization: Bearer <token>`. A missing,
-malformed or wrong token returns `401` with `WWW-Authenticate`; tokens in URLs,
-cookies or request bodies do not authenticate. Comparison uses fixed-length
-SHA-256 digests and `timingSafeEqual`. Tokens and request bodies are never logged.
-The tiny public `/healthz` response contains only `{"status":"ok"}`.
+HTTP uses the MCP server as an OAuth resource server and your Keycloak realm as
+its authorization server, following the [MCP authorization specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
+and [RFC 9728 protected resource metadata](https://www.rfc-editor.org/rfc/rfc9728.html).
+Keycloak handles user login, consent, authorization-code exchange with S256 PKCE,
+client registration and refresh. The MCP server does not proxy these operations.
+The realm must issue the exact resource audience through a scope-linked Audience
+mapper, as described in [Keycloak's official MCP guide](https://www.keycloak.org/securing-apps/mcp-authz-server).
+That guide documents the released provider's RFC 8707 limitation; audience
+mapping provides resource binding without claiming full provider conformance.
+Predefined OAuth clients work with ChatGPT; client metadata documents require
+Keycloak's experimental CIMD support, while DCR needs realm registration policies.
 
-The implementation uses the official SDK's [Streamable HTTP transport](https://ts.sdk.modelcontextprotocol.io/server)
-in stateless JSON response mode. Clients initialize normally and send each MCP
-message in an HTTP POST with both JSON and SSE in `Accept`. GET and DELETE return
-`405` after authentication; server-initiated SSE streams and resumable sessions
-are not offered. Tool names, inputs and outputs retain their existing API.
+| Environment variable | Meaning |
+| --- | --- |
+| `IMAP_MCP_OAUTH_ISSUER` (required) | Exact public realm issuer, e.g. `https://auth.example.com/realms/mail-mcp`, without trailing slash |
+| `IMAP_MCP_OAUTH_RESOURCE_URL` (required) | Canonical public MCP URL ending in `/mcp`, e.g. `https://mail-mcp.example.com/mcp`; also the exact required token audience |
+| `IMAP_MCP_OAUTH_SCOPES` | Space-separated scopes, all required on every MCP request; default `imap:access` |
+| `IMAP_MCP_OAUTH_ALLOW_INSECURE_HTTP` | Default `false`; `true` permits HTTP OAuth URLs for isolated testing only |
 
-This deployment uses a **pre-shared bearer token**, as requested. It does not
-implement the OAuth 2.1 authorization server/discovery flow described by the
-[MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).
-Use a client that can send a configured Authorization header (the official SDK's
-`StreamableHTTPClientTransport` accepts `requestInit.headers`). Clients that
-require OAuth discovery need an OAuth layer; a static token is not an OAuth
-access-token issuance service. The token grants access to all configured accounts
-and the enabled tools. Use `IMAP_MCP_READ_ONLY` or `IMAP_MCP_ENABLED_TOOLS` to limit
-capabilities; do not reuse the token for other services or share it among tenants.
+`IMAP_MCP_TRANSPORT=http` enables HTTP outside Compose; stdio remains the default
+and uses local process access control. HTTP defaults to host `127.0.0.1`, port
+`8787`. OAuth URLs come from configuration, never Host/forwarded headers or token
+claims. HTTPS is required by default. The server discovers the realm's
+`/.well-known/openid-configuration` at startup, checks its exact issuer and
+requires a JWKS URL on the same origin, authorization-code support and S256 PKCE.
+Discovery failures prevent startup.
+`npm run setup -- oauth-check` validates the current environment and discovery;
+it does not prove login/token issuance or fetch signing keys.
 
-For HTTP outside Compose, set `IMAP_MCP_TRANSPORT=http` and exactly one of
-`IMAP_MCP_BEARER_TOKEN_FILE` (preferred) or `IMAP_MCP_BEARER_TOKEN`. Token strings
-must contain 32–4096 characters of RFC 6750 syntax; use random secrets. Inline
-tokens are consumed from `process.env` at startup and only a digest is kept.
-`IMAP_MCP_HOST` defaults to `127.0.0.1`, `IMAP_MCP_PORT` to `8787`, and
-`IMAP_MCP_CONFIG_DIR` to `~/.imap-mcp`. Stdio remains the default transport and
-uses local process access control without HTTP bearer authentication.
+Unauthenticated `/mcp` requests return `401` with a `WWW-Authenticate` challenge
+containing `resource_metadata` and the required `scope`. Public metadata is at
+`/.well-known/oauth-protected-resource/mcp` and the root fallback
+`/.well-known/oauth-protected-resource`. For a public URL such as
+`https://mail.example.com/service/mcp`, the path-specific metadata is instead
+`/.well-known/oauth-protected-resource/service/mcp`. Both advertise the exact
+resource, Keycloak issuer, supported scopes and header-only bearer tokens.
+Keycloak serves its own authorization-server discovery; no local fake issuer or
+registration endpoint is advertised.
 
-### Reverse proxy
+Each MCP request must supply `Authorization: Bearer <access_token>`. The verifier
+uses `jose` and realm JWKS to verify RS256 signatures, exact `iss`, exact `aud`,
+mandatory `exp`, `iat`, `sub`, `azp`, Keycloak access-token `typ=Bearer`, and any
+`nbf`. ID/refresh tokens, expired/future tokens, query/cookie credentials and
+duplicate/malformed Authorization headers are rejected. Invalid tokens return
+`401 invalid_token`; valid tokens lacking a required scope return
+`403 insufficient_scope` with scope and metadata guidance. Signing keys are cached
+for five minutes and refreshed for unknown keys after a 30-second cooldown.
+Key retrieval uses a five-second timeout and rejects redirects.
 
-Terminate **HTTPS** at the proxy and forward `/mcp` to
-`http://127.0.0.1:47863/mcp`. Preserve `Host`, `Authorization`, `Origin`, `Accept`,
-`Content-Type`, and MCP protocol headers. Do not log Authorization headers or
-request bodies. Add the public hostname to `IMAP_MCP_ALLOWED_HOSTS` before
-starting; hostnames are exact, without scheme, port or wildcard. Origin headers
-are rejected by default. If a browser client needs access, allow only its exact
-origin in `IMAP_MCP_ALLOWED_ORIGINS`; configure CORS explicitly at the proxy, including preflight OPTIONS responses.
-The MCP application itself requires bearer authentication on OPTIONS.
-Native MCP clients commonly omit Origin and do not need that allow-list.
-This follows the transport specification's [Origin validation and authentication guidance](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
+Tokens remain in request memory and are never logged, persisted or forwarded to
+mail servers. The official SDK receives verified authentication context. Refresh
+is the MCP client's responsibility; after refresh, the new token is verified on
+its next request. This uses local JWT validation, not online introspection:
+Keycloak logout/revocation or role removal does not invalidate already-issued
+JWTs immediately. Use short access-token lifetimes to bound this interval.
 
-Example nginx location inside an existing HTTPS virtual host for
-`mail-mcp.example.com` (also add that name to the host allow-list):
+An authorized user has access to **all accounts and enabled tools** in this
+server's shared store. OAuth does not add per-user mailbox isolation. Restrict
+who receives the required scope in Keycloak. Existing `IMAP_MCP_READ_ONLY` and
+`IMAP_MCP_ENABLED_TOOLS` still limit capabilities globally.
+
+The official SDK's [Streamable HTTP transport](https://ts.sdk.modelcontextprotocol.io/server)
+is stateless with JSON responses. POST handles messages; authenticated GET/DELETE
+return `405`. Tool names, schemas and outputs retain their API. `/healthz` is a
+minimal public liveness response.
+
+### Reverse proxy and migration
+
+Terminate HTTPS and forward `/mcp` plus **both metadata paths** to the application.
+For a path prefix, forward the canonical public MCP path to local `/mcp` and
+preserve the full path-specific well-known URL. Preserve `Host`, `Authorization`,
+`Origin`, `Accept`, `Content-Type` and MCP protocol headers. Do not log credentials
+or request bodies. Add the public hostname to `IMAP_MCP_ALLOWED_HOSTS` (exact
+hostname, no scheme/port/wildcard). Forwarded headers never bypass validation.
+
+Origin-bearing MCP requests are rejected by default. Add exact browser origins
+to `IMAP_MCP_ALLOWED_ORIGINS` when needed. The app then handles unauthenticated
+OPTIONS preflight and exposes `WWW-Authenticate` through CORS. Tool requests
+still require a valid access token. Public metadata supports discovery CORS for
+any origin, while retaining Host validation. Native clients usually omit Origin.
+
+Example nginx locations in the HTTPS virtual host for `mail-mcp.example.com`:
 
 ```nginx
 location = /mcp {
-    proxy_pass http://127.0.0.1:47863/mcp;
+    proxy_pass http://127.0.0.1:47863;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header Authorization $http_authorization;
@@ -219,17 +258,31 @@ location = /mcp {
     proxy_read_timeout 300s;
     client_max_body_size 40m;
 }
+location = /.well-known/oauth-protected-resource {
+    proxy_pass http://127.0.0.1:47863;
+    proxy_set_header Host $host;
+}
+location = /.well-known/oauth-protected-resource/mcp {
+    proxy_pass http://127.0.0.1:47863;
+    proxy_set_header Host $host;
+}
 ```
 
-For token rotation, run `npm run setup -- token --rotate`, update the client's
-private Authorization configuration, then `docker compose up -d --force-recreate`.
-A recreate is required because Compose secret mounts retain the old inode after
-atomic token replacement. Account credential environment overrides similarly
-require recreating the container to load changed `credentials.env` values.
-`docker compose down` removes containers/networks and keeps the host data.
-`npm run test:docker` builds the image and runs an isolated Compose smoke test
-with temporary accounts, authentication, host/MCP edits and restart persistence;
-it never contacts mail servers and cleans up its container afterward.
+Static bearer authentication, `imap-setup token`, token generation and the Compose
+bearer secret mount have been removed. Remove `IMAP_MCP_TOKEN_FILE`,
+`IMAP_MCP_BEARER_TOKEN_FILE` and `IMAP_MCP_BEARER_TOKEN` from deployment settings,
+add the OAuth variables, configure Keycloak, update proxy discovery routes and
+configure the client's OAuth registration. Old token files are unused and may
+be removed after migration; account stores and keys remain unchanged. Legacy
+runtime bearer variables cause a startup error rather than enabling a fallback.
+Recreate the container with `docker compose up --build -d --force-recreate`.
+Changes to `credentials.env` also require recreating the container.
+
+`docker compose down` preserves host data. `npm run test:docker` runs an isolated
+Compose smoke test with a local signing fixture and temporary accounts, without
+contacting mail servers. Unit/integration tests cover real signed JWT validation,
+discovery, CORS and the official SDK's PKCE/refresh workflow. A production
+Keycloak/client login must still be verified in your deployment.
 
 ### Overriding Credentials via Environment Variables
 
@@ -786,7 +839,7 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
 - Account configurations are stored in `~/.imap-mcp/accounts.json`
 - The store directory, `.key`, and `accounts.json` are written owner-only
   (`0700`/`0600`) so other local users cannot read the key or the credentials
-- HTTP MCP requires a bearer token; CLI account output omits passwords
+- HTTP MCP requires a realm-issued OAuth access token with the resource audience and required scope; CLI account output omits passwords
 - The image contains neither configuration nor credentials; persistence uses host bind mounts
 - Downloaded attachments are confined to the downloads directory; sender-supplied
   filenames cannot write outside it
