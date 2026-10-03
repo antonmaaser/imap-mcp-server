@@ -53,6 +53,16 @@ working in this repository.
   writes hold `.accounts.lock` and rename a private temporary file atomically.
   Missing/corrupt keys and corrupt stores fail closed. SMTP edits preserve
   encrypted credentials when password fields are omitted.
+- **Background monitoring** (`src/monitoring/`) — Docker enables in-process
+  polling; other runtimes opt in with `IMAP_MCP_POLL_ENABLED=true`. Dedicated,
+  bounded, read-only IMAP connections check UIDVALIDITY/UIDNEXT and fetch only
+  new UIDs. `monitor.sqlite` in the config bind stores per-folder cursors, compact
+  pending UID ranges, encrypted event subscriptions and a durable outbox.
+  Poll state and outbox insertion are one transaction. Never equate unread,
+  downloaded, webhook-accepted and explicitly acknowledged/processed states.
+  Use UIDVALIDITY guards; reset invalidates old UIDs. `src/modern-http.ts` adapts
+  the documented 2026-07-28 HTTP tools/events subset while preserving SDK v1
+  clients. Events require an authenticated, client-created subscription.
 - **Docker** — `Dockerfile`, `compose.yaml`; localhost `47863` maps to internal
   `8787`. Non-root host UID/GID, read-only root, config and attachment binds,
   OAuth issuer/resource/scope environment settings. `credentials.env` injects
@@ -100,14 +110,20 @@ touch `src/`. Keep the suite green.
 4. **Credentials stay local.** Do not add telemetry, analytics, crash reporting,
    or any third-party network calls. The only outbound connections are to the
    user's own IMAP/SMTP servers and the explicitly configured Keycloak realm
-   for public discovery/signing keys. Never forward MCP tokens to mail servers.
+   for public discovery/signing keys, plus authenticated MCP Events subscribers'
+   verified public HTTPS callbacks explicitly authorized by this monitoring
+   feature. Callbacks receive identifiers only, never mail bodies or OAuth
+   tokens. Validate DNS at connection time, pin checked public addresses,
+   preserve TLS hostname verification, and never follow redirects. Never forward
+   MCP tokens to mail servers.
 5. **Validate and sanitize file paths** for attachment upload/download (already
    done via `path.basename`); keep writes confined to the configured directories.
 
 ## Conventions
 
-- TypeScript, ESM (`"type": "module"`), **Node ≥ 22.12** (declared in
-  `package.json` `engines.node`; CI runs 22.x and 24.x).
+- TypeScript, ESM (`"type": "module"`), **Node 22.13+ on 22.x or 23.4+**
+  (declared in `package.json` `engines.node`; CI runs the exact 22.13.0 floor and
+  24.x). Built-in SQLite is unflagged starting at 22.13.0/23.4.0. Docker uses 24.x.
   - npm checks a dependency's `engines` against the Node doing the *install*,
     not against the floor we declare — so a dependency needing a newer Node
     installs silently and only breaks on a user's older runtime. This is how

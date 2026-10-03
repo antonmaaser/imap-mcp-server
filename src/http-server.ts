@@ -4,6 +4,8 @@ import { hostHeaderValidation } from '@modelcontextprotocol/sdk/server/middlewar
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { readOAuthConfig, resourceMetadataUrl, type OAuthConfig, type AccessTokenVerifier } from './oauth.js';
+import { handleModernRequest } from './modern-http.js';
+import type { MailEvents } from './monitoring/events.js';
 
 export interface HttpConfig {
   host: string;
@@ -41,7 +43,7 @@ export function readHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
   };
 }
 
-export function createHttpApp(config: HttpConfig, createServer: () => McpServer, verifier: AccessTokenVerifier) {
+export function createHttpApp(config: HttpConfig, createServer: () => McpServer, verifier: AccessTokenVerifier, events?: MailEvents) {
   const app = express();
   app.disable('x-powered-by');
   // The proxy must preserve Host; never trust forwarded host/origin headers.
@@ -79,7 +81,7 @@ export function createHttpApp(config: HttpConfig, createServer: () => McpServer,
       res.set('Access-Control-Expose-Headers', 'WWW-Authenticate, MCP-Protocol-Version');
       if (req.method === 'OPTIONS') {
         res.set('Access-Control-Allow-Methods', 'POST, GET, DELETE, OPTIONS');
-        res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID');
+        res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID, Mcp-Method, Mcp-Name');
         res.status(204).end();
         return;
       }
@@ -104,6 +106,7 @@ export function createHttpApp(config: HttpConfig, createServer: () => McpServer,
   app.use('/mcp', requireBearerAuth({ verifier, requiredScopes: config.oauth.scopes, resourceMetadataUrl: resourceMetadataUrl(config.oauth) }));
   // Parse after authorization; 40 MiB accommodates a 25 MiB base64 upload.
   app.post('/mcp', express.json({ limit: '40mb' }), async (req, res) => {
+    if (await handleModernRequest(req, res, createServer, events)) return;
     const server = createServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, enableJsonResponse: true,

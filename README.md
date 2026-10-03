@@ -18,7 +18,8 @@ A powerful Model Context Protocol (MCP) server that provides seamless IMAP email
 
 ## Installation
 
-> **Requires Node.js 22.12 or newer.** Node 18 and 20 have both reached
+> **Requires Node.js 22.13+ on 22.x, or 23.4+.** Docker uses Node 24.
+> Built-in SQLite requires no CLI flag on these versions. Node 18 and 20 have both reached
 > end-of-life, and several of this package's dependencies no longer support
 > them. Check yours with `node --version`.
 
@@ -148,6 +149,7 @@ configuration rather than treating its own `127.0.0.1` as the Docker host.
 | Host file/directory | Container path | Purpose |
 | --- | --- | --- |
 | `IMAP_MCP_CONFIG_DIR` (default `.imap-mcp/`) | `/data/config` (read/write) | Shared encrypted accounts and `.key` |
+| `monitor.sqlite` inside the config directory | `/data/config/monitor.sqlite` | Durable polling state, pending UIDs, encrypted subscriptions and delivery outbox |
 | `IMAP_MCP_DOWNLOAD_DIR` (default `downloads/`) | `/data/attachments` (read/write) | Downloads and uploaded attachments |
 | `credentials.env` (optional) | Process environment | Runtime-only account credential overrides |
 
@@ -161,6 +163,123 @@ filesystem, dropped capabilities, `no-new-privileges`, temporary `/tmp`, bounded
 logs and a liveness check at `/healthz`. `.key` and `accounts.json` are owner-only,
 with private file permissions. OAuth signing keys are fetched from the configured
 Keycloak realm; no authentication client secret or static token is stored here.
+
+### Background mail monitoring and client events
+
+Compose enables recurring background polling in the existing Node process.
+No host cron, additional container, database service, LLM call or permanently
+open IMAP socket is needed. Every configured account's INBOX is checked every
+60 seconds by default. Outside Compose, opt in with `IMAP_MCP_POLL_ENABLED=true`.
+
+An unchanged folder needs only login and `STATUS UIDVALIDITY UIDNEXT`; no bodies,
+headers or attachments are downloaded. When UIDNEXT advances, read-only
+`EXAMINE` and bounded `UID FETCH` identify the actual new UIDs. Each folder's
+identity, next UID and compact ranges of pending UIDs are persisted in SQLite
+using Node's built-in module. No new package dependency is required. Cursor
+advancement and notification queuing commit atomically. A sample database with
+one folder and one pending UID occupies 44 KiB; growth tracks pending work and
+subscriptions, rather than cached mailbox contents. Quiet accounts sleep until
+their next poll. Independent folder leases serialize multiple processes sharing
+a local configuration directory;
+use one container for the lowest resource use. Do not place SQLite on NFS.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `IMAP_MCP_POLL_ENABLED` | `true` in Compose; otherwise `false` | Strict `true`/`false`; enables monitoring and its three tools |
+| `IMAP_MCP_POLL_INTERVAL_SECONDS` | `60` | Default interval per monitored folder, integer 10–86400 seconds |
+| `IMAP_MCP_POLL_INITIAL` | `baseline` | First successful check records the current UIDNEXT; `existing` also queues existing messages |
+| `IMAP_MCP_POLL_ACCOUNTS` | empty | Empty watches every account's INBOX, including newly added accounts. Otherwise an explicit JSON array selects accounts by ID or exact name, folders and optional intervals |
+
+For example, add this single line to the deployment `.env`, then rebuild and
+restart with `docker compose up -d --build`:
+
+```dotenv
+IMAP_MCP_POLL_ACCOUNTS='[{"account":"Work","folders":["INBOX","Receipts"],"intervalSeconds":60},{"account":"Personal","folders":["INBOX"],"intervalSeconds":300}]'
+```
+
+Use IDs when names are ambiguous. Server-side filing rules require explicitly
+monitoring their destination folders. Intervals start per folder and requests
+run sequentially; slow providers can delay later checks. A poll has a 45-second
+deadline. Backlogs are scanned in windows of at most 10000 UID positions per
+check, with `lastResult=catching_up` until the cursor catches up.
+
+`baseline` deliberately excludes messages already present when monitoring first
+starts; their historical MCP access cannot be reconstructed. After a UIDVALIDITY
+reset, current messages are requeued using the new generation. Changing an
+account's mailbox identity establishes a fresh baseline and invalidates its
+old subscriptions. Credentials changing alone preserve the identity.
+Failures retain the cursor and report `lastError=poll_failed`; an empty queue
+during an error does not establish that no new mail arrived. IMAP polling cannot
+recover a message that arrives and is deleted or moved away between checks.
+UID changes identify mailbox additions, including copies/moves into the folder;
+they do not prove first receipt of a globally unique message.
+
+The processing sequence is:
+
+1. `imap_get_pending_emails` returns a page of UIDs, UIDVALIDITY, last successful
+   polling result and delivery failure counts. Continue with `nextAfterUid`.
+2. `imap_get_pending_email` retrieves one queued message with an IMAP UIDVALIDITY
+   guard. It returns Markdown and attachment metadata without changing flags
+   or writing the body to disk. A message removed by another client returns
+   `vanished=true`.
+3. Complete the intended work, then call `imap_acknowledge_emails` with concrete
+   UIDs and the same UIDVALIDITY. Only the local pending queue changes. A confirmed
+   vanished UID may also be acknowledged as unavailable. Repeated calls are
+   idempotent.
+
+Pending means **not explicitly acknowledged**, independently of `\\Seen` and
+whether a body has been downloaded. Existing foreground read tools do not
+automatically acknowledge mail. Pending state is shared by all authorized
+clients. Read-only mode exposes the two monitoring read tools but excludes
+acknowledgement; an explicit tool allowlist must include acknowledgement for
+automatic queue completion. Reset `afterUid` to zero if UIDVALIDITY changes.
+
+The [official OpenAI MCP Events documentation](https://developers.openai.com/plugins/build/mcp-events)
+defines the supported ChatGPT trigger path: the client subscribes, supplies a
+callback and signing secret, and the server sends signed webhook events.
+This endpoint implements the documented HTTP `2026-07-28` tools/events subset
+alongside existing SDK v1 requests: `server/discover`, `tools/list`, `tools/call`,
+`ping`, `events/list`, `events/subscribe` and `events/unsubscribe`. Modern requests
+must include the protocol/client metadata and matching MCP HTTP headers.
+No resource subscriptions, sampling or unsolicited model invocation are advertised.
+
+The discoverable event is `email.arrived`, filtered by `accountId` and exact
+`folder` (default INBOX). Its payload contains only account/folder, UIDVALIDITY,
+UID ranges and an arrival/reset reason. The client fetches bodies using
+the tools above. Webhooks use Standard Webhooks HMAC signatures, signed callback
+challenges, HTTPS, public DNS addresses pinned at connection time, no redirects,
+encrypted stored signing secrets and finite subscriptions bounded by the
+authenticated token's expiration (and at most one hour). The client must refresh
+with current authorization; `ttlMs:null` receives a finite grant. No OAuth token
+is retained for background delivery. Removed or changed accounts stop delivery.
+
+Transient delivery failures retry with exponential backoff, preserving event
+IDs and generating fresh signatures; attempts stop after eight failures.
+HTTP 410 stops the subscription; 413 and permanent client errors stop that
+delivery. Failed deliveries remain visible in pending-status counts until the
+subscription expires or is removed. Queue pressure pauses scanning rather than
+advancing past unqueued notifications. Webhook receipt is distinct from completed
+client processing. Deliveries are at least once; client actions should be
+idempotent. Event history replay is not offered (`cursor:null`). A subscription
+starts after successful callback verification and registration. Only UIDs newly
+discovered by a successful poll while that account/folder subscription is active
+generate mail events; this uses discovery time, not the email's Date header.
+Subscribing does not emit an event for an existing pending backlog. Refreshing
+before expiry preserves the continuous window and its queued retries. Renewing
+after expiry starts a new window and discards deliveries from the previous
+window. Mail discovered before subscription, after expiry or after unsubscribe
+remains available through the pending tools without generating a mail event.
+The signed callback verification challenge itself is separate from mail events.
+
+After deploying, rescan the MCP server in the ChatGPT plugin and request, for
+example: “Monitor email.arrived for account ID … in INBOX. Read the pending
+emails, perform …, and acknowledge only after successful processing.” ChatGPT
+must create the event subscription and define the task that should run. A server
+cannot choose an arbitrary chat or wake a client that has not subscribed.
+Clients without MCP Events can use the same pending tools on their own schedule.
+Client-side handling and real ChatGPT task wakeup are deferred to the plugin
+integration. Local protocol tests verify server subscription and signed delivery;
+they do not establish product availability or activate a client task.
 
 ### OAuth authorization
 

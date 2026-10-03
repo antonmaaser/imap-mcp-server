@@ -7,6 +7,8 @@ import { accountTools } from './account-tools.js';
 import { emailTools } from './email-tools.js';
 import { folderTools } from './folder-tools.js';
 import { spamTools } from './spam-tools.js';
+import { monitorTools } from './monitor-tools.js';
+import type { MailMonitor } from '../monitoring/monitor.js';
 
 /**
  * Read-only / safe-by-default subset of tools.
@@ -29,6 +31,8 @@ export const READ_ONLY_TOOLS: readonly string[] = [
   'imap_download_attachment',
   'imap_find_thread_messages',
   'imap_find_email_by_message_id',
+  'imap_get_pending_emails',
+  'imap_get_pending_email',
   // Folder (read)
   'imap_list_folders',
   'imap_folder_status',
@@ -128,7 +132,8 @@ export function registerTools(
   imapService: ImapService,
   accountManager: AccountManager,
   smtpService: SmtpService,
-  spamService: SpamService
+  spamService: SpamService,
+  monitor?: MailMonitor
 ): void {
   const enabled = resolveEnabledTools();
 
@@ -152,6 +157,7 @@ export function registerTools(
 
   // Register spam detection and management tools
   spamTools(target, imapService, spamService);
+  if (monitor) monitorTools(target, monitor);
 
   if (enabled) {
     // Log to stderr only — stdout is the JSON-RPC channel.
@@ -159,7 +165,8 @@ export function registerTools(
     console.error(
       `[imap-mcp] Tool access restricted: ${registered.length} enabled, ${skipped} disabled.`
     );
-    const unknown = [...enabled].filter(name => !seen.has(name));
+    const inactiveMonitorTools = ['imap_get_pending_emails', 'imap_get_pending_email', 'imap_acknowledge_emails'];
+    const unknown = [...enabled].filter(name => !seen.has(name) && (monitor || !inactiveMonitorTools.includes(name)));
     if (unknown.length > 0) {
       console.error(
         `[imap-mcp] Warning: ignoring unknown tool name(s) in IMAP_MCP_ENABLED_TOOLS: ${unknown.join(', ')}`

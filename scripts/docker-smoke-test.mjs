@@ -1,4 +1,7 @@
 // Uses only temporary test accounts; never contacts an IMAP/SMTP server.
+// Exercise the monitoring runtime/database without selecting any mail account.
+process.env.IMAP_MCP_POLL_ENABLED = 'true';
+process.env.IMAP_MCP_POLL_ACCOUNTS = '[{"account":"__isolated_smoke_unselected__","folders":["INBOX"]}]';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -44,6 +47,12 @@ try {
   assert.equal(inspect.HostConfig.ReadonlyRootfs, true);
   assert.equal(inspect.HostConfig.PortBindings['8787/tcp'][0].HostIp, '127.0.0.1');
   assert.notEqual(inspect.Config.User.split(':')[0], '0');
+  // Verify built-in SQLite under the non-root, read-only container and config
+  // bind. Synthetic identifiers only; no real mailbox is contacted.
+  const monitorState = { fingerprint: 'smoke', uidValidity: '111', nextUid: 42, pending: [[40, 41]],
+    lastSuccess: '2026-10-01T00:00:00Z', lastResult: 'new' };
+  await exec('docker', ['exec', containerId, 'node', '--input-type=module', '-e',
+    "import { DatabaseSync } from 'node:sqlite';import fs from 'node:fs';const p='/data/config/monitor.sqlite';if((fs.statSync(p).mode&511)!==384)process.exit(1);const db=new DatabaseSync(p);db.prepare('INSERT INTO folders(account,folder,state) VALUES(?,?,?)').run('smoke-persistence','INBOX',process.argv[1]);db.close();", JSON.stringify(monitorState)]);
   const token = await oauth.token();
   const discovery = await (await fetch(`${base}/.well-known/oauth-protected-resource/mcp`)).json();
   assert.deepEqual(discovery.authorization_servers, [oauth.issuer]);
@@ -84,6 +93,8 @@ try {
   await compose('restart');
   // Compose wait verifies restart health without reading any app logs.
   await compose('up', '-d', '--no-build', '--wait', '--wait-timeout', '60');
+  await exec('docker', ['exec', containerId, 'node', '--input-type=module', '-e',
+    "import { DatabaseSync } from 'node:sqlite';const db=new DatabaseSync('/data/config/monitor.sqlite');const row=db.prepare('SELECT state FROM folders WHERE account=?').get('smoke-persistence');if(!row||row.state!==process.argv[1])process.exit(1);db.prepare('DELETE FROM folders WHERE account=?').run('smoke-persistence');db.close();", JSON.stringify(monitorState)]);
   base = `http://${(await compose('port', 'imap-mcp', '8787')).stdout.trim()}`;
   stage = 'SDK reconnect';
   client = new Client({ name: 'docker-smoke-restart', version: '1.0.0' });
@@ -97,7 +108,7 @@ try {
   assert.ok(!logs.includes(token) && !logs.includes('runtime-test-password') && !logs.includes('local-test-password'));
   const files = (await exec('docker', ['exec', containerId, 'node', '-e', "const fs=require('fs');process.exit(fs.existsSync('/app/.env')||fs.existsSync('/app/public')||fs.existsSync('/app/dist/web')?1:0)"]));
   assert.equal(files.stderr, '');
-  console.log('Docker smoke test passed: auth, official SDK, tool gating, shared host/MCP edits, credential overrides, attachments, restart persistence and hardened runtime.');
+  console.log('Docker smoke test passed: auth, official SDK, tool gating, shared host/MCP edits, credential overrides, attachments, monitoring database restart persistence and hardened runtime.');
 } catch (error) {
   // Command failures may include environment contents; emit only the stage-neutral message.
   if (error.stack) console.error(`Failure location: ${error.stack.split('\n').find(line => line.includes('docker-smoke-test.mjs:')) ?? ''}`);

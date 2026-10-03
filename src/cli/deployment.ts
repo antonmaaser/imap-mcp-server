@@ -36,7 +36,9 @@ export async function initializeDeployment(options: {
     `IMAP_MCP_UID=${uid}`, `IMAP_MCP_GID=${gid}`,
     ...Object.entries(oauthEnv).map(([name, value]) => `${name}="${value}"`),
     'IMAP_MCP_LOCAL_PORT=47863', 'IMAP_MCP_ALLOWED_HOSTS=localhost,127.0.0.1,[::1]',
-    'IMAP_MCP_ALLOWED_ORIGINS=', 'IMAP_MCP_READ_ONLY=false', 'IMAP_MCP_ENABLED_TOOLS=', '',
+    'IMAP_MCP_ALLOWED_ORIGINS=', 'IMAP_MCP_READ_ONLY=false', 'IMAP_MCP_ENABLED_TOOLS=',
+    'IMAP_MCP_POLL_ENABLED=true', 'IMAP_MCP_POLL_INTERVAL_SECONDS=60',
+    'IMAP_MCP_POLL_INITIAL=baseline', 'IMAP_MCP_POLL_ACCOUNTS=', '',
   ].join('\n');
   let createdEnv = false;
   try { await fs.writeFile(envFile, data, { mode: 0o600, flag: 'wx' }); createdEnv = true; }

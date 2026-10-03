@@ -12,10 +12,10 @@ async function main() {
   // Validate auth before touching account files or opening a listener.
   const config = mode === 'http' ? readHttpConfig() : undefined;
   const verifier = config ? await createOAuthVerifier(config.oauth) : undefined;
-  const runtime = createRuntime();
+  const runtime = await createRuntime();
   const closeTransport = config
     ? await new Promise<() => Promise<void>>((resolve, reject) => {
-      const listener = createHttpApp(config, runtime.createServer, verifier!).listen(config.port, config.host, error => {
+      const listener = createHttpApp(config, runtime.createServer, verifier!, runtime.events).listen(config.port, config.host, error => {
         if (error) { reject(error); return; }
         console.error(`IMAP MCP HTTP server listening on ${config.host}:${config.port}/mcp`);
         resolve(() => new Promise<void>((done) => { listener.close(() => done()); }));
@@ -28,6 +28,7 @@ async function main() {
       console.error('IMAP MCP stdio server started');
       return () => server.close();
     })();
+  runtime.startMonitoring();
 
   let stopping = false;
   const shutdown = async () => {
@@ -37,6 +38,7 @@ async function main() {
     const timeout = setTimeout(() => process.exit(1), 10_000);
     timeout.unref();
     try {
+      await runtime.stopMonitoring();
       await closeTransport();
       await runtime.close();
       process.exit(0);

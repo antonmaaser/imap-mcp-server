@@ -145,7 +145,7 @@ describe('registerTools gating', () => {
 
   it('registers only the read-only subset in read-only mode', () => {
     const names = registeredToolsFor({ IMAP_MCP_READ_ONLY: 'true' });
-    expect(new Set(names)).toEqual(new Set(READ_ONLY_TOOLS));
+    expect(new Set(names)).toEqual(new Set(READ_ONLY_TOOLS.filter(name => !name.startsWith('imap_get_pending_'))));
     for (const tool of DESTRUCTIVE_TOOLS) {
       expect(names).not.toContain(tool);
     }
